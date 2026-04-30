@@ -328,8 +328,7 @@ with tab_news:
                 st.subheader("🧠 Shrnutí od Google Gemini AI")
                 st.info("💡 Google poskytuje 15 dotazů za minutu zdarma. Kliknutím na tlačítko níže spustíš analýzu.")
                 
-                if st.button("✨ Vygenerovat AI Shrnutí z
-práv", type="primary"):
+                if st.button("✨ Vygenerovat AI Shrnutí zpráv", type="primary"):
                     with st.spinner("Gemini právě čte a analyzuje zprávy..."):
                         try:
                             genai.configure(api_key=gemini_key)
