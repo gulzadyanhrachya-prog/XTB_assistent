@@ -1,4 +1,4 @@
-, klikni na tužku ✏️ a nahraď kód tímto čistším zněním:import streamlit as st
+import streamlit as st
 import yfinance as yf
 
 # --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
