@@ -35,26 +35,32 @@ def get_market_data(ticker_symbol):
                     "Open": res["o"], "High": res["h"], "Low": res["l"], "Close": res["c"]
                 }, index=pd.to_datetime(res["t"], unit="s"))
         except Exception:
-            pass # Pokud Finnhub selže, jdeme na zálohu
+            pass # Pokud Finnhub selže, jdeme tiše dál na zálohu
             
     # 2. Záloha přes Yahoo Finance (pro Forex, Indexy nebo při chybě)
     if df.empty:
-        stock = yf.Ticker(ticker_symbol)
-        df = stock.history(period="6mo")
+        try:
+            stock = yf.Ticker(ticker_symbol)
+            df = stock.history(period="6mo")
+        except Exception:
+            return None # Záchranná síť: Pokud Yahoo spadne, vrátíme prázdná data místo pádu aplikace
         
-    if df.empty:
+    if df is None or df.empty:
         return None
         
     # Výpočet indikátorů
-    df['SMA_50'] = df['Close'].rolling(window=50).mean()
-    df['SMA_200'] = df['Close'].rolling(window=200).mean()
-    delta = df['Close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -1 * delta.clip(upper=0)
-    ema_gain = gain.ewm(com=13, adjust=False).mean()
-    ema_loss = loss.ewm(com=13, adjust=False).mean()
-    rs = ema_gain / ema_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    try:
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['SMA_200'] = df['Close'].rolling(window=200).mean()
+        delta = df['Close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -1 * delta.clip(upper=0)
+        ema_gain = gain.ewm(com=13, adjust=False).mean()
+        ema_loss = loss.ewm(com=13, adjust=False).mean()
+        rs = ema_gain / ema_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+    except Exception:
+        pass # Pokud se nepovede spočítat indikátory, nevadí
     
     return df
 
@@ -65,20 +71,26 @@ ticker_input = st.text_input("Zadej ticker (např. AAPL, TSLA, EURUSD=X):", valu
 current_price = 0.0
 
 if ticker_input:
-    df = get_market_data(ticker_input)
-    if df is not None:
-        current_price = float(df['Close'].iloc[-1])
-        st.success(f"✅ Aktuální cena **{ticker_input}**: {current_price:.2f}")
-        
-        # Vykreslení grafu
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Cena'))
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='SMA 50'))
-        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='orange', width=2), name='SMA 200'))
-        fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("⚠️ Data se nepodařilo načíst. Zadej cenu do kalkulačky ručně.")
+    try:
+        df = get_market_data(ticker_input)
+        if df is not None and not df.empty:
+            current_price = float(df['Close'].iloc[-1])
+            st.success(f"✅ Aktuální cena **{ticker_input}**: {current_price:.2f}")
+            
+            # Vykreslení grafu
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Cena'))
+            if 'SMA_50' in df.columns:
+                fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='SMA 50'))
+            if 'SMA_200' in df.columns:
+                fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='orange', width=2), name='SMA 200'))
+            fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Yahoo Finance momentálně blokuje stahování dat a Finnhub API není dostupné. Grafy jsou dočasně vypnuté.")
+            st.info("💡 **Kalkulačka níže je ale stále plně funkční!** Zadej si cenu ručně.")
+    except Exception as e:
+        st.warning("⚠️ Došlo k chybě při stahování dat. Kalkulačka níže je ale stále plně funkční.")
 
 st.divider()
 
@@ -109,7 +121,7 @@ with tab1:
             risk_amount = acc_bal * (risk_pct / 100)
             risk_per_share = abs(entry - sl)
             profit_per_share = abs(tp - entry)
-            position_size = risk_amount / risk_per_share
+            position_size = risk_amount / risk_per_share if risk_per_share > 0 else 0
             total_profit = position_size * profit_per_share
             rrr = profit_per_share / risk_per_share if risk_per_share > 0 else 0
             
@@ -119,7 +131,6 @@ with tab1:
             r2.metric("Potenciální Zisk", f"{total_profit:.2f}")
             r3.metric("Velikost pozice (Kusy)", f"{position_size:.2f}")
             
-            # Vyhodnocení RRR
             if rrr >= 2:
                 r4.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}", "Skvělé RRR")
             elif rrr >= 1.5:
@@ -127,7 +138,6 @@ with tab1:
             else:
                 r4.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}", "Špatné RRR (Nedoporučeno)", delta_color="inverse")
                 
-            # Uložení do deníku
             if save_trade:
                 trade_record = {
                     "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -142,10 +152,67 @@ with tab1:
                 st.session_state.journal.append(trade_record)
                 st.toast('Obchod byl úspěšně uložen do deníku!', icon='📓')
 
-# --- ZÁLOŽKA 2: CFD (Zkrácená verze pro ukázku) ---
+# --- ZÁLOŽKA 2: CFD (FOREX, INDEXY) ---
 with tab2:
-    st.info("Pro CFD zadej hodnotu 1 bodu. Logika výpočtu je stejná jako u akcií.")
-    # Zde by byl obdobný kód pro CFD jako v předchozí verzi, jen obohacený o TP a RRR.
+    st.info("💡 U CFD kontraktů (Forex, Indexy) se neobchoduje na kusy, ale na Loty. Pro správný výpočet potřebuješ znát hodnotu 1 bodu pro 1 Lot (najdeš v kalkulačce přímo v xStation).")
+    
+    col3, col4 = st.columns(2)
+    with col3:
+        st.subheader("Parametry účtu")
+        acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=100.0, value=10000.0, step=100.0, key="bal_cfd")
+        risk_pct_cfd = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=2.0, step=0.1, key="risk_cfd")
+        save_trade_cfd = st.checkbox("Po výpočtu uložit obchod do deníku", value=True, key="save_cfd")
+        
+    with col4:
+        st.subheader("Parametry obchodu")
+        entry_cfd = st.number_input("Vstupní cena (Entry):", min_value=0.00001, value=current_price if current_price > 0 else 1.1000, format="%.5f", key="entry_cfd")
+        sl_cfd = st.number_input("Cena Stop Loss (SL):", min_value=0.00001, value=(current_price * 0.99) if current_price > 0 else 1.0950, format="%.5f", key="sl_cfd")
+        tp_cfd = st.number_input("Take Profit (TP):", min_value=0.00001, value=(current_price * 1.02) if current_price > 0 else 1.1100, format="%.5f", key="tp_cfd")
+        point_value = st.number_input("Hodnota 1 bodu při objemu 1 Lot (v měně účtu):", min_value=0.01, value=10.0, step=1.0)
+
+    if st.button("Spočítat pro CFD/Forex", type="primary"):
+        if entry_cfd == sl_cfd:
+            st.error("Vstupní cena a Stop Loss nesmí být stejné!")
+        else:
+            risk_amount = acc_bal_cfd * (risk_pct_cfd / 100)
+            points_at_risk = abs(entry_cfd - sl_cfd)
+            points_profit = abs(tp_cfd - entry_cfd)
+            
+            risk_per_one_lot = points_at_risk * point_value
+            profit_per_one_lot = points_profit * point_value
+            
+            lot_size = risk_amount / risk_per_one_lot if risk_per_one_lot > 0 else 0
+            total_profit = lot_size * profit_per_one_lot
+            rrr = points_profit / points_at_risk if points_at_risk > 0 else 0
+            
+            st.success("✅ Výpočet dokončen")
+            res5, res6, res7, res8 = st.columns(4)
+            res5.metric("Max. Ztráta", f"{risk_amount:.2f}")
+            res6.metric("Potenciální Zisk", f"{total_profit:.2f}")
+            res7.metric("Velikost pozice (Loty)", f"{lot_size:.3f}")
+            
+            if rrr >= 2:
+                res8.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}", "Skvělé RRR")
+            elif rrr >= 1.5:
+                res8.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}", "Přijatelné RRR", delta_color="off")
+            else:
+                res8.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}", "Špatné RRR", delta_color="inverse")
+            
+            st.warning(f"V xStation zadej objem: **{lot_size:.2f} Lotu** (případně zaokrouhli podle možností instrumentu).")
+            
+            if save_trade_cfd:
+                trade_record = {
+                    "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Instrument": ticker_input,
+                    "Typ": "CFD/Forex",
+                    "Vstup": entry_cfd, "SL": sl_cfd, "TP": tp_cfd,
+                    "Objem": round(lot_size, 2),
+                    "Risk": round(risk_amount, 2),
+                    "Potenciální Zisk": round(total_profit, 2),
+                    "RRR": f"1:{rrr:.2f}"
+                }
+                st.session_state.journal.append(trade_record)
+                st.toast('Obchod byl úspěšně uložen do deníku!', icon='📓')
 
 st.divider()
 
@@ -155,7 +222,6 @@ if len(st.session_state.journal) > 0:
     df_journal = pd.DataFrame(st.session_state.journal)
     st.dataframe(df_journal, use_container_width=True)
     
-    # Tlačítko pro stažení do CSV
     csv = df_journal.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="📥 Stáhnout deník jako CSV (Excel)",
