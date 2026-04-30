@@ -753,8 +753,7 @@ with tab_news:
             st.info("Žádné aktuální zprávy nebyly nalezeny nebo ticker není podporován (např. Forex).")
 
 # ==========================================
-# ZÁLOŽKA 4: CLOU
-DOVÝ DENÍK
+# ZÁLOŽKA 4: CLOUDOVÝ DENÍK
 # ==========================================
 with tab_journal:
     st.header("📓 Můj obchodní deník (Supabase)")
