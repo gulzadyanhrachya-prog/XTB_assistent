@@ -6,14 +6,13 @@ import requests
 import time
 from datetime import datetime, timedelta
 from supabase import create_client, Client
+import google.generativeai as genai
 
-# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
-st.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
-st.title("📈 Můj XTB Trading Terminál")
-st.markdown("Komplexní nástroj: Kalkulačka, Skener trhu, Zprávy a Cloudový deník.")
+# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---\nst.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
+st.title("📈 Můj XTB Trading Terminál (Gemini AI Edice)")
+st.markdown("Komplexní nástroj: Kalkulačka, Pokročilý Skener, Google Gemini Zprávy a Cloudový deník.")
 
-# --- INICIALIZACE PAMĚTI A DATABÁZE ---
-if 'journal' not in st.session_state:
+# --- INICIALIZACE PAMĚTI A DATABÁZE ---\nif 'journal' not in st.session_state:
     st.session_state.journal = []
 
 supabase_url = st.secrets.get("SUPABASE_URL", None)
@@ -25,12 +24,11 @@ if supabase_url and supabase_key:
     except Exception:
         pass
 
-# --- FUNKCE PRO STAŽENÍ DAT (FINNHUB -> TWELVE DATA -> YFINANCE) ---
-@st.cache_data(ttl=300)
+# --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---\n@st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
     df = pd.DataFrame()
     
-    # 1. Pokus přes Finnhub (Americké akcie)
+    # 1. Finnhub
     finnhub_key = st.secrets.get("FINNHUB_API_KEY", None)
     if finnhub_key and "=" not in ticker_symbol and "^" not in ticker_symbol and "/" not in ticker_symbol:
         try:
@@ -46,24 +44,22 @@ def get_market_data(ticker_symbol):
         except Exception:
             pass
 
-    # 2. Pokus přes Twelve Data (Forex, Indexy, Evropské akcie)
+    # 2. Twelve Data
     twelve_key = st.secrets.get("TWELVEDATA_API_KEY", None)
     if df.empty and twelve_key:
         try:
-            # Twelve Data používá formát např. EUR/USD
             url = f"https://api.twelvedata.com/time_series?symbol={ticker_symbol}&interval=1day&outputsize=130&apikey={twelve_key}"
             res = requests.get(url).json()
             if "values" in res:
                 df_td = pd.DataFrame(res["values"])
                 df_td['datetime'] = pd.to_datetime(df_td['datetime'])
-                df_td = df_td.set_index('datetime')
-                df_td = df_td.astype(float) # Převod textu na čísla
+                df_td = df_td.set_index('datetime').astype(float)
                 df_td = df_td.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
-                df = df_td.sort_index() # Seřazení od nejstaršího po nejnovější
+                df = df_td.sort_index()
         except Exception:
             pass
             
-    # 3. Záloha přes Yahoo Finance (Když všechno ostatní selže)
+    # 3. Yahoo Finance
     if df.empty:
         try:
             stock = yf.Ticker(ticker_symbol)
@@ -74,17 +70,28 @@ def get_market_data(ticker_symbol):
     if df is None or df.empty:
         return None
         
-    # Výpočet indikátorů
-    try:
+    # --- VÝPOČET POKROČILÝCH INDIKÁTORŮ ---\n    try:
+        # SMA
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
+        
+        # RSI
         delta = df['Close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -1 * delta.clip(upper=0)
-        ema_gain = gain.ewm(com=13, adjust=False).mean()
-        ema_loss = loss.ewm(com=13, adjust=False).mean()
-        rs = ema_gain / ema_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
+        gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+        loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        
+        # MACD
+        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = ema12 - ema26
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        # Bollinger Bands (BB)
+        df['BB_Mid'] = df['Close'].rolling(window=20).mean()
+        df['BB_Std'] = df['Close'].rolling(window=20).std()
+        df['BB_Up'] = df['BB_Mid'] + (df['BB_Std'] * 2)
+        df['BB_Low'] = df['BB_Mid'] - (df['BB_Std'] * 2)
     except Exception:
         pass
     return df
@@ -103,21 +110,17 @@ def get_company_news(ticker_symbol):
     except Exception:
         return None
 
-# --- HLAVNÍ NAVIGACE (ZÁLOŽKY) ---
-tab_calc, tab_scanner, tab_news, tab_journal = st.tabs([
+# --- HLAVNÍ NAVIGACE ---\ntab_calc, tab_scanner, tab_news, tab_journal = st.tabs([
     "📊 Analýza & Kalkulačka", 
-    "📡 Skener Trhu", 
-    "📰 Zprávy a Fundamenty", 
-    "📓 Obchodní deník"
+    "📡 Pokročilý Skener", 
+    "🤖 AI Zprávy", 
+    "📓 Cloudový Deník"
 ])
 
-# ==========================================
-# ZÁLOŽKA 1: ANALÝZA A KALKULAČKA
-# ==========================================
-with tab_calc:
+# ==========================================\n# ZÁLOŽKA 1: ANALÝZA A KALKULAČKA
+# ==========================================\nwith tab_calc:
     st.header("🔍 Vyhledání a Risk Management")
-    st.info("💡 **Tip pro tickery:** Akcie zadávej normálně (např. `AAPL`). Forex zadávej s lomítkem (např. `EUR/USD`). Indexy podle zkratky (např. `SPX` pro S&P 500, `NDX` pro Nasdaq).")
-    ticker_input = st.text_input("Zadej ticker:", value="AAPL").upper()
+    ticker_input = st.text_input("Zadej ticker (např. AAPL, EUR/USD, SPX):", value="AAPL").upper()
     current_price = 0.0
 
     if ticker_input:
@@ -132,10 +135,14 @@ with tab_calc:
                 fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='SMA 50'))
             if 'SMA_200' in df.columns:
                 fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], line=dict(color='orange', width=2), name='SMA 200'))
-            fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=400)
+            if 'BB_Up' in df.columns:
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Up'], line=dict(color='gray', width=1, dash='dot'), name='BB Horní'))
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Low'], line=dict(color='gray', width=1, dash='dot'), name='BB Dolní'))
+                
+            fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=500)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("⚠️ Data se nepodařilo načíst. Zkontroluj správnost tickeru, nebo zadej cenu do kalkulačky ručně.")
+            st.warning("⚠️ Data se nepodařilo načíst. Zadej cenu do kalkulačky ručně.")
 
     st.divider()
     calc_tab1, calc_tab2 = st.tabs(["📈 Akcie a ETF (Kusy)", "💱 CFD / Forex (Loty)"])
@@ -174,7 +181,7 @@ with tab_calc:
                     "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}"
                 }
                 st.session_state.journal.append(trade_record)
-                st.toast('Obchod uložen do deníku!', icon='📓')
+                st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
     with calc_tab2:
         st.info("Pro CFD zadej hodnotu 1 bodu. Logika výpočtu je stejná.")
@@ -216,14 +223,12 @@ with tab_calc:
                     "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}"
                 }
                 st.session_state.journal.append(trade_record)
-                st.toast('Obchod uložen do deníku!', icon='📓')
+                st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
-# ==========================================
-# ZÁLOŽKA 2: SKENER TRHU
-# ==========================================
-with tab_scanner:
-    st.header("📡 Automatický Skener Trhu")
-    st.markdown("Zadej seznam tickerů oddělených čárkou. Aplikace je projde a najde ty, které jsou přeprodané (RSI < 30) nebo překoupené (RSI > 70).")
+# ==========================================\n# ZÁLOŽKA 2: POKROČILÝ SKENER TRHU
+# ==========================================\nwith tab_scanner:
+    st.header("📡 Pokročilý Skener Trhu")
+    st.markdown("Skener nyní vyhodnocuje RSI, MACD momentum a Bollingerova pásma.")
     
     default_tickers = "AAPL, MSFT, GOOGL, AMZN, TSLA, EUR/USD, GBP/USD, SPX"
     scan_input = st.text_area("Tickery ke skenování:", value=default_tickers)
@@ -241,17 +246,31 @@ with tab_scanner:
             if df_scan is not None and not df_scan.empty and 'RSI' in df_scan.columns:
                 last_close = df_scan['Close'].iloc[-1]
                 last_rsi = df_scan['RSI'].iloc[-1]
-                sma_200 = df_scan['SMA_200'].iloc[-1] if 'SMA_200' in df_scan.columns else 0
+                macd = df_scan['MACD'].iloc[-1] if 'MACD' in df_scan.columns else 0
+                macd_sig = df_scan['MACD_Signal'].iloc[-1] if 'MACD_Signal' in df_scan.columns else 0
+                bb_up = df_scan['BB_Up'].iloc[-1] if 'BB_Up' in df_scan.columns else 0
+                bb_low = df_scan['BB_Low'].iloc[-1] if 'BB_Low' in df_scan.columns else 0
                 
-                trend = "Růst" if last_close > sma_200 else "Pokles"
-                if last_rsi < 30:
-                    signal = "🟢 PŘEPRODÁNO (Koupit?)"
-                elif last_rsi > 70:
-                    signal = "🔴 PŘEKOUPENO (Prodat?)"
-                else:
-                    signal = "⚪ Neutrální"
+                # Vyhodnocení RSI
+                if last_rsi < 30: rsi_sig = "🟢 Přeprodáno"
+                elif last_rsi > 70: rsi_sig = "🔴 Překoupeno"
+                else: rsi_sig = "⚪ Neutrální"
+                
+                # Vyhodnocení MACD
+                macd_sig_text = "🟢 Býčí (Růst)" if macd > macd_sig else "🔴 Medvědí (Pokles)"
+                
+                # Vyhodnocení Bollinger Bands
+                if last_close < bb_low: bb_sig_text = "🟢 Pod dolní (Sleva)"
+                elif last_close > bb_up: bb_sig_text = "🔴 Nad horní (Drahé)"
+                else: bb_sig_text = "⚪ Uvnitř pásem"
                     
-                results.append({"Ticker": t, "Cena": round(last_close, 2), "RSI": round(last_rsi, 1), "Trend (vs SMA200)": trend, "Signál": signal})
+                results.append({
+                    "Ticker": t, 
+                    "Cena": round(last_close, 2), 
+                    "RSI": f"{round(last_rsi, 1)} ({rsi_sig})", 
+                    "MACD Momentum": macd_sig_text, 
+                    "Bollinger Bands": bb_sig_text
+                })
             
             progress_bar.progress((i + 1) / len(tickers_to_scan))
             time.sleep(0.5)
@@ -260,57 +279,87 @@ with tab_scanner:
         if results:
             st.dataframe(pd.DataFrame(results), use_container_width=True)
 
-# ==========================================
-# ZÁLOŽKA 3: ZPRÁVY A FUNDAMENTY
-# ==========================================
-with tab_news:
-    st.header(f"📰 Nejnovější zprávy pro {ticker_input}")
+# ==========================================\n# ZÁLOŽKA 3: AI ZPRÁVY A FUNDAMENTY
+# ==========================================\nwith tab_news:
+    st.header(f"🤖 AI Analýza zpráv pro {ticker_input}")
+    gemini_key = st.secrets.get("GEMINI_API_KEY", None)
+    
     if not st.secrets.get("FINNHUB_API_KEY"):
-        st.warning("⚠️ Pro zobrazení zpráv je potřeba nastavit FINNHUB_API_KEY v sekci Secrets.")
+        st.warning("⚠️ Pro stahování zpráv je potřeba nastavit FINNHUB_API_KEY.")
     else:
         news_data = get_company_news(ticker_input)
         if news_data:
+            # --- AI ANALÝZA PŘES GOOGLE GEMINI ---
+            if gemini_key:
+                st.subheader("🧠 Shrnutí od Google Gemini AI")
+                with st.spinner("Gemini právě čte a analyzuje zprávy..."):
+                    try:
+                        # Nastavení Gemini klíče
+                        genai.configure(api_key=gemini_key)
+                        # Použití rychlého a bezplatného modelu Flash
+                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        
+                        news_text = "\n".join([f"- {a.get('headline')}: {a.get('summary')}" for a in news_data])
+                        prompt = f"Přečti si tyto aktuální zprávy o {ticker_input}:\n{news_text}\n\nNapiš česky velmi stručné shrnutí (max 3 věty) toho nejdůležitějšího. Na úplný konec napiš na nový řádek 'Celkový sentiment: Pozitivní / Negativní / Neutrální'."
+                        
+                        response = model.generate_content(prompt)
+                        st.info(response.text)
+                    except Exception as e:
+                        st.error(f"Nepodařilo se spojit s Gemini AI: {e}")
+            else:
+                st.info("💡 Tip: Pokud do Streamlit Secrets přidáš GEMINI_API_KEY, umělá inteligence ti tyto zprávy automaticky shrne a vyhodnotí jejich sentiment!")
+            
+            st.divider()
+            st.subheader("📰 Původní články")
             for article in news_data:
                 with st.container():
-                    st.subheader(article.get('headline', 'Bez titulku'))
-                    st.write(article.get('summary', ''))
-                    st.markdown(f"[Přečíst celý článek zde]({article.get('url', '#')})")
-                    st.caption(f"Zdroj: {article.get('source', 'Neznámý')} | Vydáno: {datetime.fromtimestamp(article.get('datetime', 0)).strftime('%Y-%m-%d %H:%M')}")
-                    st.divider()
+                    st.write(f"**{article.get('headline', 'Bez titulku')}**")
+                    st.caption(f"Zdroj: {article.get('source', 'Neznámý')} | [Přečíst celý článek]({article.get('url', '#')})")
         else:
             st.info("Žádné aktuální zprávy nebyly nalezeny nebo ticker není podporován (např. Forex).")
 
-# ==========================================
-# ZÁLOŽKA 4: OBCHODNÍ DENÍK A CLOUD
-# ==========================================
-with tab_journal:
-    st.header("📓 Můj obchodní deník")
+# ==========================================\n# ZÁLOŽKA 4: CLOUDOVÝ DENÍK
+# ==========================================\nwith tab_journal:
+    st.header("📓 Můj obchodní deník (Supabase)")
+    
+    if db_client:
+        st.success("✅ Připojeno k databázi Supabase!")
+        
+        col_db1, col_db2 = st.columns(2)
+        with col_db1:
+            if st.button("☁️ Odeslat nové obchody do cloudu", type="primary"):
+                try:
+                    for record in st.session_state.journal:
+                        db_client.table("xtb_trades").insert(record).execute()
+                    st.success("Data byla úspěšně odeslána do databáze!")
+                    st.session_state.journal = [] # Vymažeme lokální paměť po odeslání
+                except Exception as e:
+                    st.error(f"Chyba při odesílání: {e}")
+                    
+        with col_db2:
+            if st.button("📥 Načíst historii z cloudu"):
+                try:
+                    res = db_client.table("xtb_trades").select("*").execute()
+                    if res.data:
+                        st.session_state.journal = res.data
+                        st.success(f"Úspěšně načteno {len(res.data)} obchodů z cloudu!")
+                    else:
+                        st.info("Databáze je zatím prázdná.")
+                except Exception as e:
+                    st.error(f"Chyba při načítání: {e}")
+    else:
+        st.warning("Databáze není připojena. Zkontroluj SUPABASE_URL a SUPABASE_KEY.")
+
+    st.divider()
     
     if len(st.session_state.journal) > 0:
         df_journal = pd.DataFrame(st.session_state.journal)
-        st.dataframe(df_journal, use_container_width=True)
+        # Skryjeme sloupec 'id' a 'created_at' pokud přišly ze Supabase, ať je tabulka hezčí
+        cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at']]
+        st.dataframe(df_journal[cols_to_show], use_container_width=True)
         
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            csv = df_journal.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Stáhnout jako CSV", data=csv, file_name="denik.csv", mime="text/csv")
-        with col_btn2:
-            if st.button("Vymazat lokální deník"):
-                st.session_state.journal = []
-                st.rerun()
+        csv = df_journal[cols_to_show].to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Stáhnout tabulku jako CSV", data=csv, file_name="denik.csv",
+ mime="text/csv")
     else:
-        st.info("Lokální deník je zatím prázdný.")
-
-    st.divider()
-    st.subheader("☁️ Zálohování do cloudu (Supabase)")
-    if db_client:
-        st.success("✅ Připojeno k databázi Supabase!")
-        if st.button("Odeslat lokální deník do cloudu"):
-            try:
-                for record in st.session_state.journal:
-                    db_client.table("xtb_trades").insert(record).execute()
-                st.success("Data byla úspěšně odeslána do databáze!")
-            except Exception as e:
-                st.error(f"Chyba při odesílání: {e}")
-    else:
-        st.warning("Databáze není připojena. Pro trvalé ukládání si vytvoř účet na Supabase.com a vlož klíče do Streamlit Secrets.")
+        st.info("Tabulka je prázdná. Spočítej si obchod nebo klikni na 'Načíst historii z cloudu'.")
