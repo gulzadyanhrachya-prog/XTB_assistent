@@ -10,8 +10,8 @@ import google.generativeai as genai
 
 # --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
 st.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
-st.title("📈 Můj XTB Trading Terminál (Gemini AI Edice)")
-st.markdown("Komplexní nástroj: Kalkulačka, Pokročilý Skener, Google Gemini Zprávy a Cloudový deník.")
+st.title("📈 Můj XTB Trading Terminál (Ultimate Edice)")
+st.markdown("Komplexní nástroj: Kalkulačka, Pokročilý Skener, AI Zprávy a Analytický Dashboard.")
 
 # --- INICIALIZACE PAMĚTI A DATABÁZE ---
 if 'journal' not in st.session_state:
@@ -119,14 +119,14 @@ st.divider()
 col_search, _ = st.columns([1, 2])
 with col_search:
     ticker_input = st.text_input("🔍 Hledaný instrument (pro Kalkulačku a Zprávy):", value="AAPL").upper()
-st.write("") # Drobná mezera pro hezčí vzhled
+st.write("") 
 
 # --- HLAVNÍ NAVIGACE ---
 tab_calc, tab_scanner, tab_news, tab_journal = st.tabs([
     "📊 Analýza & Kalkulačka", 
     "📡 Pokročilý Skener", 
     "🤖 AI Zprávy", 
-    "📓 Cloudový Deník"
+    "📓 Analytický Deník"
 ])
 
 # ==========================================
@@ -237,7 +237,6 @@ with tab_calc:
                 st.session_state.journal.append(trade_record)
                 st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
-
 # ==========================================
 # ZÁLOŽKA 2: POKROČILÝ SKENER TRHU
 # ==========================================
@@ -329,7 +328,8 @@ with tab_news:
                 st.subheader("🧠 Shrnutí od Google Gemini AI")
                 st.info("💡 Google poskytuje 15 dotazů za minutu zdarma. Kliknutím na tlačítko níže spustíš analýzu.")
                 
-                if st.button("✨ Vygenerovat AI Shrnutí zpráv", type="primary"):
+                if st.button("✨ Vygenerovat AI Shrnutí z
+práv", type="primary"):
                     with st.spinner("Gemini právě čte a analyzuje zprávy..."):
                         try:
                             genai.configure(api_key=gemini_key)
@@ -356,14 +356,13 @@ with tab_news:
             st.info("Žádné aktuální zprávy nebyly nalezeny nebo ticker není podporován (např. Forex).")
 
 # ==========================================
-# ZÁLOŽKA 4: CLOUDOVÝ DENÍK
+# ZÁLOŽKA 4: ANALYTICKÝ DENÍK A DASHBOARD
 # ==========================================
 with tab_journal:
-    st.header("📓 Můj obchodní deník (Supabase)")
+    st.header("📓 Můj obchodní deník a Statistiky")
     
+    # --- OVLÁDÁNÍ DATABÁZE ---
     if db_client:
-        st.success("✅ Připojeno k databázi Supabase!")
-        
         col_db1, col_db2 = st.columns(2)
         with col_db1:
             if st.button("☁️ Odeslat nové obchody do cloudu", type="primary"):
@@ -391,12 +390,62 @@ with tab_journal:
 
     st.divider()
     
+    # --- ANALYTICKÝ DASHBOARD ---
     if len(st.session_state.journal) > 0:
         df_journal = pd.DataFrame(st.session_state.journal)
-        cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at']]
+        
+        st.subheader("📊 Statistiky tvého obchodování")
+        
+        # Výpočty metrik (ošetření pro případ, že Supabase vrátí čísla jako text)
+        df_journal['Risk'] = pd.to_numeric(df_journal['Risk'], errors='coerce').fillna(0)
+        df_journal['Zisk'] = pd.to_numeric(df_journal['Zisk'], errors='coerce').fillna(0)
+        
+        total_trades = len(df_journal)
+        total_risk = df_journal['Risk'].sum()
+        total_profit = df_journal['Zisk'].sum()
+        
+        # Výpočet průměrného RRR (převod textu "1:2.50" na číslo)
+        try:
+            df_journal['RRR_num'] = df_journal['RRR'].apply(lambda x: float(str(x).split(':')[1]) if ':' in str(x) else 0)
+            avg_rrr = df_journal['RRR_num'].mean()
+        except:
+            avg_rrr = 0.0
+            
+        # Zobrazení metrik
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Celkem plánovaných obchodů", total_trades)
+        m2.metric("Celkový Riskovaný kapitál", f"{total_risk:.2f}")
+        m3.metric("Celkový Potenciální Zisk", f"{total_profit:.2f}")
+        m4.metric("Průměrné RRR", f"1 : {avg_rrr:.2f}")
+        
+        st.write("") # Mezera
+        
+        # Vykreslení grafů
+        col_g1, col_g2 = st.columns(2)
+        
+        with col_g1:
+            # Koláčový graf: Rozložení portfolia
+            fig_pie = go.Figure(data=[go.Pie(labels=df_journal['Typ'], values=df_journal['Risk'], hole=.4)])
+            fig_pie.update_layout(title="Rozložení risku (Akcie vs Forex)", margin=dict(t=40, b=0, l=0, r=0))
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        with col_g2:
+            # Sloupcový graf: Risk vs Zisk pro jednotlivé instrumenty
+            fig_bar = go.Figure()
+            fig_bar.add_trace(go.Bar(x=df_journal['Instrument'], y=df_journal['Risk'], name='Risk', marker_color='#ff4b4b'))
+            fig_bar.add_trace(go.Bar(x=df_journal['Instrument'], y=df_journal['Zisk'], name='Potenciální Zisk', marker_color='#00cc96'))
+            fig_bar.update_layout(title="Risk vs Zisk podle instrumentů", barmode='group', margin=dict(t=40, b=0, l=0, r=0))
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.divider()
+        st.subheader("📋 Tabulka obchodů")
+        
+        # Zobrazení tabulky (skryjeme technické sloupce ze Supabase)
+        cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at', 'RRR_num']]
         st.dataframe(df_journal[cols_to_show], use_container_width=True)
         
+        # Tlačítko pro stažení
         csv = df_journal[cols_to_show].to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Stáhnout tabulku jako CSV", data=csv, file_name="denik.csv", mime="text/csv")
+        st.download_button("📥 Stáhnout tabulku jako CSV (Excel)", data=csv, file_name="denik.csv", mime="text/csv")
     else:
-        st.info("Tabulka je prázdná. Spočítej si obchod nebo klikni na 'Načíst historii z cloudu'.")
+        st.info("Deník je prázdný. Spočítej si obchod v Kalkulačce nebo klikni na 'Načíst historii z cloudu'.")
