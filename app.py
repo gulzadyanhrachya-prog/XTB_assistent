@@ -16,7 +16,6 @@ st.markdown("Komplexní nástroj: Kalkulačka, Skener trhu, Zprávy a Cloudový 
 if 'journal' not in st.session_state:
     st.session_state.journal = []
 
-# Pokus o připojení k Supabase (pokud uživatel zadal klíče do Secrets)
 supabase_url = st.secrets.get("SUPABASE_URL", None)
 supabase_key = st.secrets.get("SUPABASE_KEY", None)
 db_client = None
@@ -26,25 +25,45 @@ if supabase_url and supabase_key:
     except Exception:
         pass
 
-# --- POMOCNÉ FUNKCE ---
+# --- FUNKCE PRO STAŽENÍ DAT (FINNHUB -> TWELVE DATA -> YFINANCE) ---
 @st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
     df = pd.DataFrame()
-    api_key = st.secrets.get("FINNHUB_API_KEY", None)
     
-    if api_key and "=" not in ticker_symbol and "^" not in ticker_symbol:
+    # 1. Pokus přes Finnhub (Americké akcie)
+    finnhub_key = st.secrets.get("FINNHUB_API_KEY", None)
+    if finnhub_key and "=" not in ticker_symbol and "^" not in ticker_symbol and "/" not in ticker_symbol:
         try:
             end = int(time.time())
             start = end - (6 * 30 * 24 * 60 * 60)
-            url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker_symbol}&resolution=D&from={start}&to={end}&token={api_key}"
+            url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker_symbol}&resolution=D&from={start}&to={end}&token={finnhub_key}"
             res = requests.get(url).json()
             if res.get("s") == "ok":
                 df = pd.DataFrame({
                     "Open": res["o"], "High": res["h"], "Low": res["l"], "Close": res["c"]
                 }, index=pd.to_datetime(res["t"], unit="s"))
+                df = df.sort_index()
+        except Exception:
+            pass
+
+    # 2. Pokus přes Twelve Data (Forex, Indexy, Evropské akcie)
+    twelve_key = st.secrets.get("TWELVEDATA_API_KEY", None)
+    if df.empty and twelve_key:
+        try:
+            # Twelve Data používá formát např. EUR/USD
+            url = f"https://api.twelvedata.com/time_series?symbol={ticker_symbol}&interval=1day&outputsize=130&apikey={twelve_key}"
+            res = requests.get(url).json()
+            if "values" in res:
+                df_td = pd.DataFrame(res["values"])
+                df_td['datetime'] = pd.to_datetime(df_td['datetime'])
+                df_td = df_td.set_index('datetime')
+                df_td = df_td.astype(float) # Převod textu na čísla
+                df_td = df_td.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
+                df = df_td.sort_index() # Seřazení od nejstaršího po nejnovější
         except Exception:
             pass
             
+    # 3. Záloha přes Yahoo Finance (Když všechno ostatní selže)
     if df.empty:
         try:
             stock = yf.Ticker(ticker_symbol)
@@ -55,6 +74,7 @@ def get_market_data(ticker_symbol):
     if df is None or df.empty:
         return None
         
+    # Výpočet indikátorů
     try:
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
@@ -72,7 +92,7 @@ def get_market_data(ticker_symbol):
 @st.cache_data(ttl=3600)
 def get_company_news(ticker_symbol):
     api_key = st.secrets.get("FINNHUB_API_KEY", None)
-    if not api_key or "=" in ticker_symbol or "^" in ticker_symbol:
+    if not api_key or "=" in ticker_symbol or "^" in ticker_symbol or "/" in ticker_symbol:
         return None
     try:
         end_date = datetime.now().strftime("%Y-%m-%d")
@@ -96,7 +116,8 @@ tab_calc, tab_scanner, tab_news, tab_journal = st.tabs([
 # ==========================================
 with tab_calc:
     st.header("🔍 Vyhledání a Risk Management")
-    ticker_input = st.text_input("Zadej ticker (např. AAPL, TSLA, EURUSD=X):", value="AAPL").upper()
+    st.info("💡 **Tip pro tickery:** Akcie zadávej normálně (např. `AAPL`). Forex zadávej s lomítkem (např. `EUR/USD`). Indexy podle zkratky (např. `SPX` pro S&P 500, `NDX` pro Nasdaq).")
+    ticker_input = st.text_input("Zadej ticker:", value="AAPL").upper()
     current_price = 0.0
 
     if ticker_input:
@@ -114,7 +135,7 @@ with tab_calc:
             fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=400)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("⚠️ Data se nepodařilo načíst. Zadej cenu do kalkulačky ručně.")
+            st.warning("⚠️ Data se nepodařilo načíst. Zkontroluj správnost tickeru, nebo zadej cenu do kalkulačky ručně.")
 
     st.divider()
     calc_tab1, calc_tab2 = st.tabs(["📈 Akcie a ETF (Kusy)", "💱 CFD / Forex (Loty)"])
@@ -157,7 +178,45 @@ with tab_calc:
 
     with calc_tab2:
         st.info("Pro CFD zadej hodnotu 1 bodu. Logika výpočtu je stejná.")
-        # Zde by byl kód pro CFD (zkráceno pro přehlednost)
+        c3, c4 = st.columns(2)
+        with c3:
+            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=100.0, value=10000.0, step=100.0, key="bal_cfd")
+            risk_pct_cfd = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=2.0, step=0.1, key="risk_cfd")
+        with c4:
+            entry_cfd = st.number_input("Vstupní cena (Entry):", min_value=0.00001, value=current_price if current_price > 0 else 1.1000, format="%.5f", key="entry_cfd")
+            sl_cfd = st.number_input("Cena Stop Loss (SL):", min_value=0.00001, value=(current_price * 0.99) if current_price > 0 else 1.0950, format="%.5f", key="sl_cfd")
+            tp_cfd = st.number_input("Take Profit (TP):", min_value=0.00001, value=(current_price * 1.02) if current_price > 0 else 1.1100, format="%.5f", key="tp_cfd")
+            point_value = st.number_input("Hodnota 1 bodu při objemu 1 Lot:", min_value=0.01, value=10.0, step=1.0)
+
+        if st.button("Spočítat pro CFD/Forex", type="primary"):
+            if entry_cfd == sl_cfd:
+                st.error("Vstupní cena a Stop Loss nesmí být stejné!")
+            else:
+                risk_amount = acc_bal_cfd * (risk_pct_cfd / 100)
+                points_at_risk = abs(entry_cfd - sl_cfd)
+                points_profit = abs(tp_cfd - entry_cfd)
+                
+                risk_per_one_lot = points_at_risk * point_value
+                profit_per_one_lot = points_profit * point_value
+                
+                lot_size = risk_amount / risk_per_one_lot if risk_per_one_lot > 0 else 0
+                total_profit = lot_size * profit_per_one_lot
+                rrr = points_profit / points_at_risk if points_at_risk > 0 else 0
+                
+                res5, res6, res7, res8 = st.columns(4)
+                res5.metric("Max. Ztráta", f"{risk_amount:.2f}")
+                res6.metric("Potenciální Zisk", f"{total_profit:.2f}")
+                res7.metric("Velikost pozice (Loty)", f"{lot_size:.3f}")
+                res8.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}", "Doporučeno" if rrr >= 1.5 else "Nedoporučeno")
+                
+                trade_record = {
+                    "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Instrument": ticker_input, "Typ": "CFD/Forex",
+                    "Vstup": entry_cfd, "SL": sl_cfd, "TP": tp_cfd, "Objem": round(lot_size, 2),
+                    "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}"
+                }
+                st.session_state.journal.append(trade_record)
+                st.toast('Obchod uložen do deníku!', icon='📓')
 
 # ==========================================
 # ZÁLOŽKA 2: SKENER TRHU
@@ -166,8 +225,9 @@ with tab_scanner:
     st.header("📡 Automatický Skener Trhu")
     st.markdown("Zadej seznam tickerů oddělených čárkou. Aplikace je projde a najde ty, které jsou přeprodané (RSI < 30) nebo překoupené (RSI > 70).")
     
-    default_tickers = "AAPL, MSFT, GOOGL, AMZN, TSLA, META, NVDA, AMD, INTC, NFLX"
-    scan_input = st.text_area("Tickery ke skenování:", value=default_tickers)
+    default_tickers = "AAPL, MSFT, GOOGL, AMZN, TSLA, EUR/USD, GBP/USD, SPX"
+    scan_input = st.
+text_area("Tickery ke skenování:", value=default_tickers)
     
     if st.button("Spustit Skener", type="primary"):
         tickers_to_scan = [t.strip().upper() for t in scan_input.split(",") if t.strip()]
@@ -182,7 +242,7 @@ with tab_scanner:
             if df_scan is not None and not df_scan.empty and 'RSI' in df_scan.columns:
                 last_close = df_scan['Close'].iloc[-1]
                 last_rsi = df_scan['RSI'].iloc[-1]
-                sma_200 = df_scan['SMA_200'].iloc[-1]
+                sma_200 = df_scan['SMA_200'].iloc[-1] if 'SMA_200' in df_scan.columns else 0
                 
                 trend = "Růst" if last_close > sma_200 else "Pokles"
                 if last_rsi < 30:
@@ -195,7 +255,7 @@ with tab_scanner:
                 results.append({"Ticker": t, "Cena": round(last_close, 2), "RSI": round(last_rsi, 1), "Trend (vs SMA200)": trend, "Signál": signal})
             
             progress_bar.progress((i + 1) / len(tickers_to_scan))
-            time.sleep(0.5) # Pauza kvůli limitům API
+            time.sleep(0.5)
             
         status_text.text("Skenování dokončeno!")
         if results:
@@ -227,7 +287,6 @@ with tab_news:
 with tab_journal:
     st.header("📓 Můj obchodní deník")
     
-    # Zobrazení dat z paměti
     if len(st.session_state.journal) > 0:
         df_journal = pd.DataFrame(st.session_state.journal)
         st.dataframe(df_journal, use_container_width=True)
