@@ -48,8 +48,7 @@ def get_market_data(ticker_symbol):
             res = requests.get(url).json()
             if res.get("s") == "ok":
                 df = pd.DataFrame({
-                    "Open": res["o"], "High": res["h"], "Low": res["l"], "Close": res["c
-"]
+                    "Open": res["o"], "High": res["h"], "Low": res["l"], "Close": res["c"]
                 }, index=pd.to_datetime(res["t"], unit="s"))
                 df = df.sort_index()
         except Exception:
