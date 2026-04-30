@@ -8,11 +8,13 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 import google.generativeai as genai
 
-# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---\nst.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
+# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
+st.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
 st.title("📈 Můj XTB Trading Terminál (Gemini AI Edice)")
 st.markdown("Komplexní nástroj: Kalkulačka, Pokročilý Skener, Google Gemini Zprávy a Cloudový deník.")
 
-# --- INICIALIZACE PAMĚTI A DATABÁZE ---\nif 'journal' not in st.session_state:
+# --- INICIALIZACE PAMĚTI A DATABÁZE ---
+if 'journal' not in st.session_state:
     st.session_state.journal = []
 
 supabase_url = st.secrets.get("SUPABASE_URL", None)
@@ -24,7 +26,8 @@ if supabase_url and supabase_key:
     except Exception:
         pass
 
-# --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---\n@st.cache_data(ttl=300)
+# --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---
+@st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
     df = pd.DataFrame()
     
@@ -70,7 +73,8 @@ def get_market_data(ticker_symbol):
     if df is None or df.empty:
         return None
         
-    # --- VÝPOČET POKROČILÝCH INDIKÁTORŮ ---\n    try:
+    # --- VÝPOČET POKROČILÝCH INDIKÁTORŮ ---
+    try:
         # SMA
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
@@ -110,15 +114,18 @@ def get_company_news(ticker_symbol):
     except Exception:
         return None
 
-# --- HLAVNÍ NAVIGACE ---\ntab_calc, tab_scanner, tab_news, tab_journal = st.tabs([
+# --- HLAVNÍ NAVIGACE ---
+tab_calc, tab_scanner, tab_news, tab_journal = st.tabs([
     "📊 Analýza & Kalkulačka", 
     "📡 Pokročilý Skener", 
     "🤖 AI Zprávy", 
     "📓 Cloudový Deník"
 ])
 
-# ==========================================\n# ZÁLOŽKA 1: ANALÝZA A KALKULAČKA
-# ==========================================\nwith tab_calc:
+# ==========================================
+# ZÁLOŽKA 1: ANALÝZA A KALKULAČKA
+# ==========================================
+with tab_calc:
     st.header("🔍 Vyhledání a Risk Management")
     ticker_input = st.text_input("Zadej ticker (např. AAPL, EUR/USD, SPX):", value="AAPL").upper()
     current_price = 0.0
@@ -225,8 +232,10 @@ def get_company_news(ticker_symbol):
                 st.session_state.journal.append(trade_record)
                 st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
-# ==========================================\n# ZÁLOŽKA 2: POKROČILÝ SKENER TRHU
-# ==========================================\nwith tab_scanner:
+# ==========================================
+# ZÁLOŽKA 2: POKROČILÝ SKENER TRHU
+# ==========================================
+with tab_scanner:
     st.header("📡 Pokročilý Skener Trhu")
     st.markdown("Skener nyní vyhodnocuje RSI, MACD momentum a Bollingerova pásma.")
     
@@ -279,8 +288,10 @@ def get_company_news(ticker_symbol):
         if results:
             st.dataframe(pd.DataFrame(results), use_container_width=True)
 
-# ==========================================\n# ZÁLOŽKA 3: AI ZPRÁVY A FUNDAMENTY
-# ==========================================\nwith tab_news:
+# ==========================================
+# ZÁLOŽKA 3: AI ZPRÁVY A FUNDAMENTY
+# ==========================================
+with tab_news:
     st.header(f"🤖 AI Analýza zpráv pro {ticker_input}")
     gemini_key = st.secrets.get("GEMINI_API_KEY", None)
     
@@ -318,8 +329,10 @@ def get_company_news(ticker_symbol):
         else:
             st.info("Žádné aktuální zprávy nebyly nalezeny nebo ticker není podporován (např. Forex).")
 
-# ==========================================\n# ZÁLOŽKA 4: CLOUDOVÝ DENÍK
-# ==========================================\nwith tab_journal:
+# ==========================================
+# ZÁLOŽKA 4: CLOUDOVÝ DENÍK
+# ==========================================
+with tab_journal:
     st.header("📓 Můj obchodní deník (Supabase)")
     
     if db_client:
@@ -359,7 +372,6 @@ def get_company_news(ticker_symbol):
         st.dataframe(df_journal[cols_to_show], use_container_width=True)
         
         csv = df_journal[cols_to_show].to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Stáhnout tabulku jako CSV", data=csv, file_name="denik.csv",
- mime="text/csv")
+        st.download_button("📥 Stáhnout tabulku jako CSV", data=csv, file_name="denik.csv", mime="text/csv")
     else:
         st.info("Tabulka je prázdná. Spočítej si obchod nebo klikni na 'Načíst historii z cloudu'.")
