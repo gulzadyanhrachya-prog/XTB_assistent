@@ -4,3 +4,4 @@ plotly
 pandas
 requests
 supabase
+google-generativeai
