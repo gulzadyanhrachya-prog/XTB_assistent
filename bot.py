@@ -64,7 +64,7 @@ def scan_markets():
             bb_low = df['BB_Low'].iloc[-1]
             
             # LOGIKA: Kdy má bot poslat signál? (Např. RSI pod 30 nebo cena pod BB_Low)
-            if rsi < 100 or current_price < bb_low:
+            if rsi < 30 or current_price < bb_low:
                 # Výpočet parametrů obchodu
                 entry = current_price
                 sl = entry * 0.95  # Stop Loss 5% pod vstupem
