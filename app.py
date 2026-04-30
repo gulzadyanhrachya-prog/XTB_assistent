@@ -1,6 +1,5 @@
-import streamlit as st
+, klikni na tužku ✏️ a nahraď kód tímto čistším zněním:import streamlit as st
 import yfinance as yf
-import requests
 
 # --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
 st.set_page_config(page_title="XTB Analytický Asistent", page_icon="📈", layout="centered")
@@ -10,18 +9,12 @@ st.markdown("Tato aplikace slouží jako podpora pro manuální obchodování. S
 
 st.divider()
 
-# --- FUNKCE PRO STAŽENÍ DAT (S CACHINGEM A VLASTNÍ SESSION) ---
-# @st.cache_data zajistí, že si aplikace výsledek zapamatuje na 5 minut (300 sekund)
+# --- FUNKCE PRO STAŽENÍ DAT (S CACHINGEM) ---
+# @st.cache_data zajistí, že si aplikace výsledek zapamatuje na 5 minut
 @st.cache_data(ttl=300)
 def get_current_price(ticker_symbol):
-    # Vytvoříme vlastní spojení a budeme se tvářit jako běžný prohlížeč Chrome
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
-    
-    # Předáme naši "maskovanou" session do yfinance
-    stock = yf.Ticker(ticker_symbol, session=session)
+    # Necháme yfinance, ať si spojení a maskování vyřeší úplně samo
+    stock = yf.Ticker(ticker_symbol)
     hist = stock.history(period="1d")
     
     if not hist.empty:
@@ -35,7 +28,6 @@ ticker_input = st.text_input("Zadej ticker akcie nebo ETF (např. AAPL, TSLA, SP
 current_price = 0.0
 if ticker_input:
     try:
-        # Zavoláme naši novou chytrou funkci
         price = get_current_price(ticker_input)
         
         if price is not None:
