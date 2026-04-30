@@ -1,2 +1,4 @@
 streamlit
 yfinance>=0.2.37
+plotly
+pandas
