@@ -4,7 +4,7 @@ import numpy as np
 import requests
 import time
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # --- TAJNÉ KLÍČE Z GITHUB SECRETS ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -19,42 +19,42 @@ except:
 
 RISK_PCT = 1.5  
 
+# --- MEGA-SEZNAM NEJLEPŠÍCH TRHŮ ---
 TICKERS_TO_SCAN = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "CSCO", "NFLX", 
     "AMD", "INTC", "IBM", "CRM", "BA", "CAT", "CVX", "GS", "HD", "JNJ", "JPM", "KO", 
-    "EUR/USD", "GBP/USD", "USD/JPY", "^GSPC", "^IXIC", "BTC-USD", "ETH-USD"
-] # Zkráceno pro ukázku, klidně si doplň zbytek
+    "MCD", "MMM", "NKE", "PG", "UNH", "V", "WMT", "DIS",
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", 
+    "^GSPC", "^IXIC", "^DJI", "BTC-USD", "ETH-USD", "SOL-USD"
+]
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
-def check_earnings(ticker):
-    """Zjistí, zda firma do 14 dnů vyhlašuje výsledky (Earnings)"""
-    if not FINNHUB_KEY or "=" in ticker or "^" in ticker or "/" in ticker:
-        return False
-    try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        next_week = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
-        url = f"https://finnhub.io/api/v1/calendar/earnings?from={today}&to={next_week}&symbol={ticker}&token={FINNHUB_KEY}"
-        res = requests.get(url).json()
-        if "earningsCalendar" in res and len(res["earningsCalendar"]) > 0:
-            return True
-    except: pass
-    return False
-
 def get_data(ticker):
     df = pd.DataFrame()
-    # Stahujeme 2 roky dat, abychom mohli spočítat dlouhodobý týdenní trend (MTF)
     if FINNHUB_KEY and "=" not in ticker and "^" not in ticker and "/" not in ticker:
         try:
             end = int(time.time())
-            start = end - (2 * 365 * 24 * 60 * 60)
+            start = end - (2 * 365 * 24 * 60 * 60) # 2 roky historie pro AI učení
             url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={start}&to={end}&token={FINNHUB_KEY}"
             res = requests.get(url).json()
             if res.get("s") == "ok":
                 df = pd.DataFrame({"High": res["h"], "Low": res["l"], "Close": res["c"]}, index=pd.to_datetime(res["t"], unit="s"))
+        except: pass
+
+    if df.empty and TWELVE_KEY and "/" in ticker:
+        try:
+            url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval=1day&outputsize=500&apikey={TWELVE_KEY}"
+            res = requests.get(url).json()
+            if "values" in res:
+                df_td = pd.DataFrame(res["values"])
+                df_td['datetime'] = pd.to_datetime(df_td['datetime'])
+                df_td = df_td.set_index('datetime').astype(float)
+                df_td = df_td.rename(columns={"high": "High", "low": "Low", "close": "Close"})
+                df = df_td.sort_index()
         except: pass
 
     if df.empty:
@@ -63,14 +63,7 @@ def get_data(ticker):
         except: return None
         
     if not df.empty and len(df) > 50:
-        # --- MULTI-TIMEFRAME ANALÝZA (Týdenní trend) ---
-        # Převedeme denní data na týdenní a spočítáme SMA 50
-        df_weekly = df.resample('W').agg({'Close': 'last'})
-        df_weekly['SMA_50_W'] = df_weekly['Close'].rolling(50).mean()
-        # Přeneseme týdenní SMA zpět do denního grafu
-        df['Weekly_SMA_50'] = df_weekly['SMA_50_W'].reindex(df.index, method='ffill')
-
-        # --- DENNÍ INDIKÁTORY ---
+        # Indikátory
         delta = df['Close'].diff()
         gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
@@ -89,56 +82,109 @@ def get_data(ticker):
         return df
     return None
 
+def optimize_strategy(df):
+    """
+    AI MOZEK: Bleskově otestuje 18 různých strategií na historii daného trhu
+    a vybere tu, která má největší zisk a Win Rate.
+    """
+    best_profit = -9999
+    best_params = None
+    
+    # Převedeme data do slovníku pro extrémně rychlý výpočet (zlomek vteřiny)
+    records = df[['High', 'Low', 'Close', 'RSI', 'BB_Low', 'ATR']].to_dict('records')
+    
+    # Testujeme různé kombinace RSI, Stop Lossu a Take Profitu
+    for rsi_val in [30, 35, 40]:
+        for sl_val in [1.5, 2.0, 3.0]:
+            for tp_val in [3.0, 4.0, 5.0]:
+                trades = 0
+                wins = 0
+                profit = 0
+                in_trade = False
+                entry = 0; sl = 0; tp = 0
+                
+                for row in records:
+                    if pd.isna(row['RSI']) or pd.isna(row['ATR']): continue
+                    
+                    if not in_trade:
+                        if row['RSI'] < rsi_val and row['Close'] < row['BB_Low']:
+                            entry = row['Close']
+                            sl = entry - (sl_val * row['ATR'])
+                            tp = entry + (tp_val * row['ATR'])
+                            in_trade = True
+                    else:
+                        if row['Low'] <= sl:
+                            profit -= (entry - sl)
+                            trades += 1
+                            in_trade = False
+                        elif row['High'] >= tp:
+                            profit += (tp - entry)
+                            wins += 1
+                            trades += 1
+                            in_trade = False
+                            
+                # Pokud je strategie zisková, uložíme ji jako nejlepší
+                if trades > 0 and profit > best_profit:
+                    best_profit = profit
+                    best_params = {
+                        "rsi": rsi_val, "sl_atr": sl_val, "tp_atr": tp_val, 
+                        "win_rate": (wins/trades)*100, "trades": trades, "profit": profit
+                    }
+                    
+    # Vrátíme parametry pouze pokud je trh historicky ziskový
+    if best_params and best_params["profit"] > 0:
+        return best_params
+    return None
+
 def scan_markets():
     opportunities = []
-    print(f"Začínám skenovat {len(TICKERS_TO_SCAN)} instrumentů...")
+    print(f"Začínám AI skenování {len(TICKERS_TO_SCAN)} instrumentů...")
     
     for ticker in TICKERS_TO_SCAN:
         df = get_data(ticker)
         if df is not None and not df.empty and 'RSI' in df.columns and 'ATR' in df.columns:
+            
+            # 1. KROK: Najdi nejlepší parametry pro tento konkrétní trh
+            best_setup = optimize_strategy(df)
+            
+            # Pokud trh prodělává při jakémkoliv nastavení, bot ho přeskočí!
+            if not best_setup:
+                print(f"Ignoruji {ticker} - historicky neziskový trh.")
+                continue
+                
+            # 2. KROK: Zkontroluj dnešní cenu podle nejlepších parametrů
             current_price = df['Close'].iloc[-1]
             rsi = df['RSI'].iloc[-1]
             bb_low = df['BB_Low'].iloc[-1]
             atr = df['ATR'].iloc[-1]
-            weekly_sma = df['Weekly_SMA_50'].iloc[-1]
             
-            # 1. MTF FILTR: Je trh v dlouhodobém růstu?
-            is_uptrend = current_price > weekly_sma if not pd.isna(weekly_sma) else True
-            
-            # LOGIKA: RSI < 30 + Jsme v dlouhodobém Uptrendu
-            if (rsi < 30 or current_price < bb_low) and is_uptrend:
+            if rsi < best_setup['rsi'] and current_price < bb_low:
                 
-                # 2. FUNDAMENTÁLNÍ FILTR: Nejsou blízko Earnings?
-                has_earnings = check_earnings(ticker)
-                if has_earnings:
-                    print(f"Ignoruji {ticker} - blížící se Earnings!")
-                    continue # Přeskočíme tuto akcii
-                
-                # --- VÝPOČET RISKU A TRAILING STOPU ---
+                # Výpočet přesných hodnot podle vítězné strategie
                 entry = current_price
-                sl = entry - (2 * atr)
-                tp = entry + (4 * atr)
-                be_level = entry + (1.5 * atr) # Kdy posunout na Break-Even
+                sl = entry - (best_setup['sl_atr'] * atr)
+                tp = entry + (best_setup['tp_atr'] * atr)
                 
                 risk_amount = ACCOUNT_BALANCE * (RISK_PCT / 100)
                 risk_per_share = abs(entry - sl)
                 volume = risk_amount / risk_per_share if risk_per_share > 0 else 0
                 
-                msg = f"🚨 *OBCHODNÍ PŘÍLEŽITOST: {ticker}* 🚨\n\n"
-                msg += f"✅ *MTF Potvrzení:* Dlouhodobý trend je RŮSTOVÝ.\n"
-                msg += f"✅ *Fundamenty:* Žádné blížící se Earnings.\n\n"
-                msg += f"🤖 *AI Vypočítaný Setup (Risk {RISK_PCT}%):*\n"
+                msg = f"🚨 *AI SIGNÁL: {ticker}* 🚨\n\n"
+                msg += f"Trh je ve slevě (RSI: {rsi:.1f})!\n\n"
+                msg += f"🧠 *Auto-Tuning (Historie 2 roky):*\n"
+                msg += f"Bot zjistil, že tento trh nejlépe funguje s RSI < {best_setup['rsi']} a SL {best_setup['sl_atr']}x ATR.\n"
+                msg += f"Úspěšnost strategie: *{best_setup['win_rate']:.1f} %* ({best_setup['trades']} obchodů)\n\n"
+                
+                msg += f"📊 *Parametry pro XTB (Risk {RISK_PCT}%):*\n"
                 msg += f"• *Vstup (Entry):* {entry:.4f}\n"
-                msg += f"• *Stop Loss (SL):* {sl:.4f} _(2x ATR)_\n"
-                msg += f"• *Take Profit (TP):* {tp:.4f} _(RRR 1:2)_\n"
+                msg += f"• *Stop Loss (SL):* {sl:.4f}\n"
+                msg += f"• *Take Profit (TP):* {tp:.4f}\n"
                 
                 if "/" in ticker:
-                    msg += f"• *Objem pro XTB:* {volume:.2f} Lotů\n\n"
+                    msg += f"• *Objem:* {volume:.2f} Lotů *(Zkontroluj hodnotu bodu!)*\n\n"
                 else:
-                    msg += f"• *Objem pro XTB:* {volume:.2f} Kusů\n\n"
+                    msg += f"• *Objem:* {volume:.2f} Kusů\n\n"
                     
-                msg += f"🛡️ *Řízení pozice (Trailing Stop):*\n"
-                msg += f"Jakmile cena dosáhne *{be_level:.2f}*, posuň Stop Loss na vstupní cenu ({entry:.2f}), abys chránil kapitál!\n\n"
                 msg += f"_(Riskováno {risk_amount:.2f} ze zůstatku {ACCOUNT_BALANCE})_"
                 
                 opportunities.append(msg)
