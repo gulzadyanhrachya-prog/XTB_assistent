@@ -58,7 +58,9 @@ def check_market_panic():
 
 def check_ai_sentiment(ticker):
     """AI Sentiment Filtr: Zeptá se Gemini, jestli firma nemá fatální problém."""
-    if not GEMINI_KEY or not FINNHUB_KEY or "=" in ticker or "^" in ticker or "/" in ticker:
+    if not GEMINI_KEY:
+        return "⚠️ Chybí GEMINI_API_KEY v GitHub Secrets!"
+    if not FINNHUB_KEY or "=" in ticker or "^" in ticker or "/" in ticker:
         return "Bez AI kontroly (Forex/Index)"
         
     try:
@@ -134,10 +136,6 @@ def get_data(ticker):
     return None
 
 def optimize_strategy(df):
-    """
-    Testuje 2 strategie: Mean-Reversion (Sleva) a Breakout (Trend).
-    Vybere tu nejziskovější.
-    """
     best_profit = -9999
     best_params = None
     records = df[['High', 'Low', 'Close', 'RSI', 'BB_Low', 'ATR', 'High_20', 'MACD', 'MACD_Signal']].to_dict('records')
@@ -193,7 +191,7 @@ def scan_markets():
     
     for ticker in TICKERS_TO_SCAN:
         if "/" in ticker and ACCOUNT_BALANCE < 10000:
-            continue # Ochrana před drahým Forexem
+            continue 
 
         df = get_data(ticker)
         if df is not None and not df.empty and 'RSI' in df.columns and 'ATR' in df.columns:
@@ -202,19 +200,17 @@ def scan_markets():
                 
             current_price = df['Close'].iloc[-1]
             atr = df['ATR'].iloc[-1]
+            current_rsi = df['RSI'].iloc[-1] # Uložíme si aktuální RSI
             signal_triggered = False
             
-            # Kontrola signálu podle vítězné strategie
             if best_setup['type'] == "Sleva (Mean-Reversion)":
-                if df['RSI'].iloc[-1] < best_setup['rsi'] and current_price < df['BB_Low'].iloc[-1]:
+                if current_rsi < best_setup['rsi'] and current_price < df['BB_Low'].iloc[-1]:
                     signal_triggered = True
             elif best_setup['type'] == "Trend (Breakout)":
                 if current_price > df['High_20'].iloc[-1] and df['MACD'].iloc[-1] > df['MACD_Signal'].iloc[-1]:
                     signal_triggered = True
             
             if signal_triggered:
-                # DYNAMICKÝ RISK MANAGEMENT (Kellyho princip)
-                # Základní risk je 1.0%. Pokud je Win Rate vysoký, riskujeme až 2.5%.
                 dynamic_risk_pct = round(max(0.5, min(2.5, 1.0 * (best_setup['win_rate'] / 50))), 2)
                 
                 entry = current_price
@@ -231,16 +227,12 @@ def scan_markets():
                     "ticker": ticker, "sector": SECTORS.get(ticker, "Other"),
                     "setup": best_setup, "entry": entry, "sl": sl, "tp": tp,
                     "risk_pct": dynamic_risk_pct, "risk_czk": risk_amount, "profit_czk": profit_amount,
-                    "volume": volume, "rrr": rrr
+                    "volume": volume, "rrr": rrr, "rsi": current_rsi # Přidáno RSI do paměti
                 })
         time.sleep(1.5) 
         
-    # --- KORELAČNÍ FILTR (Ochrana před dominovým efektem) ---
-    # Pokud máme více signálů ze stejného sektoru, vybereme jen ten s nejvyšším historickým ziskem
     filtered_signals = []
     sectors_used = set()
-    
-    # Seřadíme signály od nejziskovějšího
     raw_signals.sort(key=lambda x: x['setup']['profit'], reverse=True)
     
     for sig in raw_signals:
@@ -248,12 +240,10 @@ def scan_markets():
             filtered_signals.append(sig)
             sectors_used.add(sig['sector'])
 
-    # --- ODESLÁNÍ SIGNÁLŮ A AI KONTROLA ---
     if filtered_signals:
         for sig in filtered_signals:
             ticker = sig['ticker']
             
-            # AI SENTIMENT FILTR
             ai_status = check_ai_sentiment(ticker)
             if "KRIZE" in ai_status:
                 print(f"AI zablokovalo nákup {ticker} kvůli špatným zprávám!")
@@ -262,6 +252,7 @@ def scan_markets():
             
             msg = f"🚨 *AI SIGNÁL: {ticker}* ({sig['sector']}) 🚨\n\n"
             msg += f"🎯 *Strategie:* {sig['setup']['type']}\n"
+            msg += f"📈 *Aktuální RSI:* {sig['rsi']:.1f}\n" # Zobrazení RSI ve zprávě
             msg += f"🧠 *Auto-Tuning:* Úspěšnost *{sig['setup']['win_rate']:.1f} %* ({sig['setup']['trades']} obchodů)\n"
             msg += f"📰 *AI Sentiment:* {ai_status}\n\n"
             
@@ -281,7 +272,6 @@ def scan_markets():
             
             send_telegram_message(msg)
             
-            # Zápis do Supabase
             if db_client:
                 try:
                     record = {
