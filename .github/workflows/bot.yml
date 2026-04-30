@@ -1,0 +1,28 @@
+name: XTB Telegram Bot
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Spustí se každou hodinu v celou (např. 14:00, 15:00)
+  workflow_dispatch: # Umožní nám to spustit i ručně tlačítkem
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repozitáře
+        uses: actions/checkout@v3
+
+      - name: Nastavení Pythonu
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Instalace knihoven
+        run: pip install yfinance pandas requests
+
+      - name: Spuštění bota
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: python bot.py
