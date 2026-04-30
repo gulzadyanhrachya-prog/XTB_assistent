@@ -308,7 +308,7 @@ with tab_journal:
         if st.button("Odeslat lokální deník do cloudu"):
             try:
                 for record in st.session_state.journal:
-                    db_client.table("trades").insert(record).execute()
+                    db_client.table("xtb_trades").insert(record).execute()
                 st.success("Data byla úspěšně odeslána do databáze!")
             except Exception as e:
                 st.error(f"Chyba při odesílání: {e}")
