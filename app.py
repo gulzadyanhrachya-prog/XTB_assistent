@@ -303,20 +303,25 @@ with tab_news:
             # --- AI ANALÝZA PŘES GOOGLE GEMINI ---
             if gemini_key:
                 st.subheader("🧠 Shrnutí od Google Gemini AI")
-                with st.spinner("Gemini právě čte a analyzuje zprávy..."):
-                    try:
-                        # Nastavení Gemini klíče
-                        genai.configure(api_key=gemini_key)
-                        # Použití rychlého a bezplatného modelu Flash
-                        model = genai.GenerativeModel('gemini-2.5-flash')
-                        
-                        news_text = "\n".join([f"- {a.get('headline')}: {a.get('summary')}" for a in news_data])
-                        prompt = f"Přečti si tyto aktuální zprávy o {ticker_input}:\n{news_text}\n\nNapiš česky velmi stručné shrnutí (max 3 věty) toho nejdůležitějšího. Na úplný konec napiš na nový řádek 'Celkový sentiment: Pozitivní / Negativní / Neutrální'."
-                        
-                        response = model.generate_content(prompt)
-                        st.info(response.text)
-                    except Exception as e:
-                        st.error(f"Nepodařilo se spojit s Gemini AI: {e}")
+                st.info("💡 Google poskytuje 5 dotazů za minutu zdarma. Kliknutím na tlačítko níže spustíš analýzu.")
+                
+                if st.button("✨ Vygenerovat AI Shrnutí zpráv", type="primary"):
+                    with st.spinner("Gemini právě čte a analyzuje zprávy..."):
+                        try:
+                            # Nastavení Gemini klíče
+                            genai.configure(api_key=gemini_key)
+                            # Použití aktuálního modelu 2.5 Flash
+                            model = genai.GenerativeModel('gemini-2.5-flash')
+                            
+                            news_text = "\n".join([f"- {a.get('headline')}: {a.get('summary')}" for a in news_data])
+                            prompt = f"Přečti si tyto aktuální z
+právy o {ticker_input}:\n{news_text}\n\nNapiš česky velmi stručné shrnutí (max 3 věty) toho nejdůležitějšího. Na úplný konec napiš na nový řádek 'Celkový sentiment: Pozitivní / Negativní / Neutrální'."
+                            
+                            response = model.generate_content(prompt)
+                            st.success("✅ Analýza dokončena!")
+                            st.write(response.text)
+                        except Exception as e:
+                            st.error(f"Nepodařilo se spojit s Gemini AI: {e}")
             else:
                 st.info("💡 Tip: Pokud do Streamlit Secrets přidáš GEMINI_API_KEY, umělá inteligence ti tyto zprávy automaticky shrne a vyhodnotí jejich sentiment!")
             
