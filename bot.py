@@ -114,7 +114,7 @@ def scan_markets():
             atr = df['ATR'].iloc[-1]
             
             # LOGIKA: Kdy má bot poslat signál? (RSI pod 30 = extrémní sleva)
-            if rsi < 50 or current_price < bb_low:
+            if rsi < 30 or current_price < bb_low:
                 
                 # --- AUTOMATICKÝ VÝPOČET RISKU A POZICE ---
                 entry = current_price
