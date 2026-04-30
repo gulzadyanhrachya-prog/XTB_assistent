@@ -9,10 +9,12 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 import google.generativeai as genai
 
+# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
 st.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
 st.title("📈 Můj XTB Trading Terminál (Hedge Fund Edice)")
 st.markdown("Kalkulačka, Skener, AI Zprávy, Deník, Backtest a **Forward-Testing Bota**.")
 
+# --- INICIALIZACE PAMĚTI A DATABÁZE ---
 if 'journal' not in st.session_state:
     st.session_state.journal = []
 
@@ -25,6 +27,7 @@ if supabase_url and supabase_key:
     except Exception:
         pass
 
+# --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---
 @st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
     df = pd.DataFrame()
@@ -90,14 +93,26 @@ def check_earnings(ticker_symbol):
     except Exception: pass
     return False
 
+# --- GLOBÁLNÍ VYHLEDÁVÁNÍ ---
 st.divider()
 col_search, _ = st.columns([1, 2])
 with col_search:
-    ticker_input = st.text_input("🔍 Hledaný instrument:", value="AAPL").upper()
+    raw_input = st.text_input("🔍 Hledaný instrument:", value="AAPL").upper().strip()
+    
+    # AUTOMATICKÁ OPRAVA PRO FOREX (např. USDJPY -> USD/JPY)
+    if len(raw_input) == 6 and "/" not in raw_input:
+        forex_currencies = ["USD", "JPY", "EUR", "GBP", "CHF", "AUD", "CAD", "NZD"]
+        if raw_input[:3] in forex_currencies or raw_input[3:] in forex_currencies:
+            ticker_input = f"{raw_input[:3]}/{raw_input[3:]}"
+        else:
+            ticker_input = raw_input
+    else:
+        ticker_input = raw_input
+        
 st.write("") 
 
 tab_calc, tab_scanner, tab_news, tab_journal, tab_backtest, tab_forward = st.tabs([
-    "📊 Kalkulačka", "📡 Skener", "🤖 AI Zprávy", "📓 Deník", "⏪ Backtest", "🚀 Forward-Testing (Bot)"
+    "📊 Kalkulačka", "📡 Skener", "🤖 AI Zprávy", "📓 Deník", "⏪ Backtest", "🚀 Forward-Testing"
 ])
 
 # ==========================================
@@ -105,11 +120,14 @@ tab_calc, tab_scanner, tab_news, tab_journal, tab_backtest, tab_forward = st.tab
 # ==========================================
 with tab_calc:
     current_price = 0.0
+    atr = 1.0 # OCHRANA PROTI PÁDU APLIKACE
+    
     if ticker_input:
         df = get_market_data(ticker_input)
         if df is not None and not df.empty:
-            current_price = float(df['Close'].iloc[-1])
-            atr = float(df['ATR'].iloc[-1]) if 'ATR' in df.columns else 1.0
+            current_price = float(df['Close'].iloc[-1]) if not pd.isna(df['Close'].iloc[-1]) else 0.0
+            atr_val = df['ATR'].iloc[-1] if 'ATR' in df.columns else 1.0
+            atr = float(atr_val) if not pd.isna(atr_val) else 1.0
             
             if check_earnings(ticker_input):
                 st.error(f"⚠️ POZOR: {ticker_input} vyhlašuje do 14 dnů hospodářské výsledky! Hrozí vysoká volatilita a gapy.")
@@ -128,20 +146,29 @@ with tab_calc:
                 
             fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=500)
             st.plotly_chart(fig, use_container_width=True)
-            
-            st.divider()
-            st.subheader("🛡️ Výpočet Risku a Trailing Stopu")
-            
-            c1, c2 = st.columns(2)
-            with c1:
-                acc_bal = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0)
-                risk_pct = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
-            with c2:
-                entry = st.number_input("Vstupní cena (Entry):", value=current_price, step=1.0)
-                sl = st.number_input("Stop Loss (SL):", value=(current_price - 2*atr), step=1.0)
-                tp = st.number_input("Take Profit (TP):", value=(current_price + 4*atr), step=1.0)
+        else:
+            st.warning("⚠️ Data se nepodařilo načíst. Zkontroluj ticker nebo zadej cenu do kalkulačky ručně.")
 
-            if st.button("Spočítat parametry", type="primary"):
+    st.divider()
+    st.subheader("🛡️ Výpočet Risku a Trailing Stopu")
+    
+    # BEZPEČNÝ PŘEPÍNAČ MÍSTO VNOŘENÝCH ZÁLOŽEK
+    calc_type = st.radio("Vyber typ instrumentu pro výpočet:", ["📈 Akcie a ETF (Kusy)", "💱 CFD / Forex (Loty)"], horizontal=True)
+
+    if calc_type == "📈 Akcie a ETF (Kusy)":
+        c1, c2 = st.columns(2)
+        with c1:
+            acc_bal = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0)
+            risk_pct = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
+        with c2:
+            entry = st.number_input("Vstupní cena (Entry):", value=current_price if current_price > 0 else 150.0, step=1.0)
+            sl = st.number_input("Stop Loss (SL):", value=(current_price - 2*atr) if current_price > 0 else 140.0, step=1.0)
+            tp = st.number_input("Take Profit (TP):", value=(current_price + 4*atr) if current_price > 0 else 170.0, step=1.0)
+
+        if st.button("Spočítat parametry (Akcie)", type="primary"):
+            if entry == sl:
+                st.error("Vstup a SL nesmí být stejné!")
+            else:
                 risk_amount = acc_bal * (risk_pct / 100)
                 risk_per_share = abs(entry - sl)
                 volume = risk_amount / risk_per_share if risk_per_share > 0 else 0
@@ -151,17 +178,62 @@ with tab_calc:
                 r1, r2, r3, r4 = st.columns(4)
                 r1.metric("Max. Ztráta", f"{risk_amount:.2f}")
                 r2.metric("Potenciální Zisk", f"{total_profit:.2f}")
-                r3.metric("Velikost pozice (Kusy/Loty)", f"{volume:.2f}")
+                r3.metric("Velikost pozice (Kusy)", f"{volume:.2f}")
                 r4.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}")
                 
                 st.info(f"🛡️ **Řízení pozice:** Jakmile cena dosáhne **{(entry + 1.5*atr):.2f}**, posuň Stop Loss na Break-Even (vstupní cenu {entry:.2f}).")
                 
                 trade_record = {
                     "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "Instrument": ticker_input, "Typ": "Akcie" if "/" not in ticker_input else "CFD/Forex",
+                    "Instrument": ticker_input, "Typ": "Akcie",
                     "Vstup": entry, "SL": sl, "TP": tp, "Objem": round(volume, 2),
                     "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}",
-                    "Status": "Otevřeno" # Přidáno pro hlídače pozic
+                    "Status": "Otevřeno"
+                }
+                st.session_state.journal.append(trade_record)
+                st.toast('Obchod uložen do lokálního deníku!', icon='📓')
+
+    else:
+        st.info("Pro CFD zadej hodnotu 1 bodu. Logika výpočtu je stejná.")
+        c3, c4 = st.columns(2)
+        with c3:
+            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0, key="bal_cfd")
+            risk_pct_cfd = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1, key="risk_cfd")
+        with c4:
+            entry_cfd = st.number_input("Vstupní cena (Entry):", min_value=0.00001, value=current_price if current_price > 0 else 1.1000, format="%.5f", key="entry_cfd")
+            sl_cfd = st.number_input("Cena Stop Loss (SL):", min_value=0.00001, value=(current_price - 2*atr) if current_price > 0 else 1.0950, format="%.5f", key="sl_cfd")
+            tp_cfd = st.number_input("Take Profit (TP):", min_value=0.00001, value=(current_price + 4*atr) if current_price > 0 else 1.1100, format="%.5f", key="tp_cfd")
+            point_value = st.number_input("Hodnota 1 bodu při objemu 1 Lot:", min_value=0.01, value=10.0, step=1.0)
+
+        if st.button("Spočítat pro CFD/Forex", type="primary"):
+            if entry_cfd == sl_cfd:
+                st.error("Vstupní cena a Stop Loss nesmí být stejné!")
+            else:
+                risk_amount = acc_bal_cfd * (risk_pct_cfd / 100)
+                points_at_risk = abs(entry_cfd - sl_cfd)
+                points_profit = abs(tp_cfd - entry_cfd)
+                
+                risk_per_one_lot = points_at_risk * point_value
+                profit_per_one_lot = points_profit * point_value
+                
+                lot_size = risk_amount / risk_per_one_lot if risk_per_one_lot > 0 else 0
+                total_profit = lot_size * profit_per_one_lot
+                rrr = points_profit / points_at_risk if points_at_risk > 0 else 0
+                
+                res5, res6, res7, res8 = st.columns(4)
+                res5.metric("Max. Ztráta", f"{risk_amount:.2f}")
+                res6.metric("Potenciální Zisk", f"{total_profit:.2f}")
+                res7.metric("Velikost pozice (Loty)", f"{lot_size:.3f}")
+                res8.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}")
+                
+                st.info(f"🛡️ **Řízení pozice:** Jakmile cena dosáhne **{(entry_cfd + 1.5*atr):.5f}**, posuň Stop Loss na Break-Even (vstupní cenu {entry_cfd:.5f}).")
+                
+                trade_record = {
+                    "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "Instrument": ticker_input, "Typ": "CFD/Forex",
+                    "Vstup": entry_cfd, "SL": sl_cfd, "TP": tp_cfd, "Objem": round(lot_size, 2),
+                    "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}",
+                    "Status": "Otevřeno"
                 }
                 st.session_state.journal.append(trade_record)
                 st.toast('Obchod uložen do lokálního deníku!', icon='📓')
@@ -237,7 +309,8 @@ with tab_backtest:
 
 # ==========================================
 # ZÁLOŽKA 6: FORWARD-TESTING (Signály Bota)
-# ==========================================
+# =
+=========================================
 with tab_forward:
     st.header("🚀 Papírové portfolio Bota (Forward-Testing)")
     st.markdown("Zde vidíš všechny signály, které tvůj bot na GitHubu vygeneroval a uložil do databáze.")
@@ -296,7 +369,6 @@ with tab_journal:
         cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at', 'RRR_num']]
         st.dataframe(df_journal[cols_to_show], use_container_width=True)
 
-# Zbytek kódu (Skener a AI Zprávy) zůstává stejný jako v předchozí verzi...
 with tab_scanner:
     st.info("Skener je nyní plně automatizován přes tvého GitHub Bota.")
 with tab_news:
