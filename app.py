@@ -1,13 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as goimport streamlit as st
-import yfinance as yf
-import pandas as pd
-import plotly.graph_objects as go
-import requestsimport streamlit as st
-import yfinance as yf
-import pandas as pd
 import plotly.graph_objects as go
 import requests
 import time
