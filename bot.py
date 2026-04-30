@@ -180,13 +180,18 @@ def scan_markets():
                 msg += f"• *Stop Loss (SL):* {sl:.4f}\n"
                 msg += f"• *Take Profit (TP):* {tp:.4f}\n"
                 
+                # Výpočet RRR a finančního zisku
+                rrr = abs(tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else 0
+                profit_amount = risk_amount * rrr
+
                 if "/" in ticker:
                     msg += f"• *Objem pro XTB:* ⚠️ **Spočítej v platformě!**\n"
                     msg += f"_(Zadej SL {sl:.4f} a upravuj Loty, dokud červená ztráta nebude cca {risk_amount:.0f} CZK)_\n\n"
                 else:
                     msg += f"• *Objem pro XTB:* {volume:.2f} Kusů\n\n"
                     
-                msg += f"_(Riskováno {risk_amount:.2f} ze zůstatku {ACCOUNT_BALANCE})_"
+                msg += f"💰 *Finance:* Risk **{risk_amount:.2f} CZK** ➡️ Zisk cca **{profit_amount:.2f} CZK** (RRR 1:{rrr:.2f})\n"
+                msg += f"🏦 _(Zůstatek účtu: {ACCOUNT_BALANCE})_"
                 
                 opportunities.append(msg)
                 
