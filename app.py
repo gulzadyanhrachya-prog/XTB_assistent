@@ -51,8 +51,7 @@ def get_market_data(ticker_symbol):
     try:
         df_weekly = df.resample('W').agg({'Close': 'last'})
         df_weekly['SMA_50_W'] = df_weekly['Close'].rolling(50).mean()
-        df['Weekly_SMA_50'] = df_weekly['SMA_50_
-W'].reindex(df.index, method='ffill')
+        df['Weekly_SMA_50'] = df_weekly['SMA_50_W'].reindex(df.index, method='ffill')
 
         df['SMA_50'] = df['Close'].rolling(window=50).mean()
         df['SMA_200'] = df['Close'].rolling(window=200).mean()
