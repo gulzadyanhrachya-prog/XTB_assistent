@@ -232,15 +232,34 @@ with tab_calc:
                 st.session_state.journal.append(trade_record)
                 st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
+
 # ==========================================
 # ZÁLOŽKA 2: POKROČILÝ SKENER TRHU
 # ==========================================
 with tab_scanner:
     st.header("📡 Pokročilý Skener Trhu")
-    st.markdown("Skener nyní vyhodnocuje RSI, MACD momentum a Bollingerova pásma.")
+    st.markdown("Vyber si celý trh, nebo zadej vlastní tickery. Skener najde ty nejlepší příležitosti.")
     
-    default_tickers = "AAPL, MSFT, GOOGL, AMZN, TSLA, EUR/USD, GBP/USD, SPX"
-    scan_input = st.text_area("Tickery ke skenování:", value=default_tickers)
+    # Předpřipravené seznamy trhů
+    PREDEFINED_LISTS = {
+        "Vlastní seznam": "AAPL, MSFT, GOOGL, AMZN, TSLA, EUR/USD, GBP/USD, SPX",
+        "Top 20 US Tech (Nasdaq)": "AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, AVGO, CSCO, NFLX, AMD, QCOM, TXN, ADBE, CRM, INTC, AMAT, INTU, IBM, MU",
+        "Dow Jones 30 (US Blue Chips)": "AXP, AMGN, AAPL, BA, CAT, CSCO, CVX, GS, HD, HON, IBM, INTC, JNJ, KO, JPM, MCD, MMM, MRK, MSFT, NKE, PG, TRV, UNH, CRM, VZ, V, WMT, DIS, DOW",
+        "Top 15 Forex párů": "EUR/USD, GBP/USD, USD/JPY, USD/CHF, AUD/USD, USD/CAD, NZD/USD, EUR/GBP, EUR/JPY, GBP/JPY, CHF/JPY, EUR/AUD, EUR/CHF, AUD/JPY, NZD/JPY",
+        "Top 10 Krypto": "BTC-USD, ETH-USD, BNB-USD, SOL-USD, XRP-USD, ADA-USD, DOGE-USD, TRX-USD, DOT-USD, MATIC-USD"
+    }
+    
+    # Výběr trhu
+    market_choice = st.selectbox("Vyber trh ke skenování:", list(PREDEFINED_LISTS.keys()))
+    
+    if market_choice == "Vlastní seznam":
+        scan_input = st.text_area("Tickery ke skenování (oddělené čárkou):", value=PREDEFINED_LISTS["Vlastní seznam"])
+    else:
+        scan_input = PREDEFINED_LISTS[market_choice]
+        st.info(f"Skenuji tyto instrumenty: {scan_input}")
+        
+    # Chytrý filtr
+    only_opportunities = st.checkbox("🎯 Zobrazit pouze zajímavé příležitosti (Skrýt neutrální trhy)", value=True)
     
     if st.button("Spustit Skener", type="primary"):
         tickers_to_scan = [t.strip().upper() for t in scan_input.split(",") if t.strip()]
@@ -252,6 +271,7 @@ with tab_scanner:
         for i, t in enumerate(tickers_to_scan):
             status_text.text(f"Skenuji {t} ({i+1}/{len(tickers_to_scan)})...")
             df_scan = get_market_data(t)
+            
             if df_scan is not None and not df_scan.empty and 'RSI' in df_scan.columns:
                 last_close = df_scan['Close'].iloc[-1]
                 last_rsi = df_scan['RSI'].iloc[-1]
@@ -273,20 +293,26 @@ with tab_scanner:
                 elif last_close > bb_up: bb_sig_text = "🔴 Nad horní (Drahé)"
                 else: bb_sig_text = "⚪ Uvnitř pásem"
                     
-                results.append({
-                    "Ticker": t, 
-                    "Cena": round(last_close, 2), 
-                    "RSI": f"{round(last_rsi, 1)} ({rsi_sig})", 
-                    "MACD Momentum": macd_sig_text, 
-                    "Bollinger Bands": bb_sig_text
-                })
+                # Filtrace příležitostí
+                is_opportunity = (rsi_sig != "⚪ Neutrální") or (bb_sig_text != "⚪ Uvnitř pásem")
+                
+                if not only_opportunities or is_opportunity:
+                    results.append({
+                        "Ticker": t, 
+                        "Cena": round(last_close, 2), 
+                        "RSI": f"{round(last_rsi, 1)} ({rsi_sig})", 
+                        "MACD Momentum": macd_sig_text, 
+                        "Bollinger Bands": bb_sig_text
+                    })
             
             progress_bar.progress((i + 1) / len(tickers_to_scan))
-            time.sleep(0.5)
+            time.sleep(1) # Pauza 1 sekunda, abychom nevyčerpali limity API
             
         status_text.text("Skenování dokončeno!")
         if results:
             st.dataframe(pd.DataFrame(results), use_container_width=True)
+        else:
+            st.success("Skener nenašel žádné extrémní příležitosti (všechny trhy jsou momentálně neutrální). Zkus vypnout filtr nebo skenovat jiný trh.")
 
 # ==========================================
 # ZÁLOŽKA 3: AI ZPRÁVY A FUNDAMENTY
@@ -303,14 +329,12 @@ with tab_news:
             # --- AI ANALÝZA PŘES GOOGLE GEMINI ---
             if gemini_key:
                 st.subheader("🧠 Shrnutí od Google Gemini AI")
-                st.info("💡 Google poskytuje 5 dotazů za minutu zdarma. Kliknutím na tlačítko níže spustíš analýzu.")
+                st.info("💡 Google poskytuje 15 dotazů za minutu zdarma. Kliknutím na tlačítko níže spustíš analýzu.")
                 
                 if st.button("✨ Vygenerovat AI Shrnutí zpráv", type="primary"):
                     with st.spinner("Gemini právě čte a analyzuje zprávy..."):
                         try:
-                            # Nastavení Gemini klíče
                             genai.configure(api_key=gemini_key)
-                            # Použití aktuálního modelu 2.5 Flash
                             model = genai.GenerativeModel('gemini-2.5-flash')
                             
                             news_text = "\n".join([f"- {a.get('headline')}: {a.get('summary')}" for a in news_data])
@@ -371,7 +395,6 @@ with tab_journal:
     
     if len(st.session_state.journal) > 0:
         df_journal = pd.DataFrame(st.session_state.journal)
-        # Skryjeme sloupec 'id' a 'created_at' pokud přišly ze Supabase, ať je tabulka hezčí
         cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at']]
         st.dataframe(df_journal[cols_to_show], use_container_width=True)
         
