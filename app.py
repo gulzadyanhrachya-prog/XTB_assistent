@@ -226,8 +226,7 @@ with tab_scanner:
     st.markdown("Zadej seznam tickerů oddělených čárkou. Aplikace je projde a najde ty, které jsou přeprodané (RSI < 30) nebo překoupené (RSI > 70).")
     
     default_tickers = "AAPL, MSFT, GOOGL, AMZN, TSLA, EUR/USD, GBP/USD, SPX"
-    scan_input = st.
-text_area("Tickery ke skenování:", value=default_tickers)
+    scan_input = st.text_area("Tickery ke skenování:", value=default_tickers)
     
     if st.button("Spustit Skener", type="primary"):
         tickers_to_scan = [t.strip().upper() for t in scan_input.split(",") if t.strip()]
