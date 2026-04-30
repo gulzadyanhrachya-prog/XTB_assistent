@@ -309,8 +309,7 @@ with tab_backtest:
 
 # ==========================================
 # ZÁLOŽKA 6: FORWARD-TESTING (Signály Bota)
-# =
-=========================================
+# ==========================================
 with tab_forward:
     st.header("🚀 Papírové portfolio Bota (Forward-Testing)")
     st.markdown("Zde vidíš všechny signály, které tvůj bot na GitHubu vygeneroval a uložil do databáze.")
