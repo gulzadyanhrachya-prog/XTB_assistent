@@ -308,7 +308,7 @@ with tab_news:
                         # Nastavení Gemini klíče
                         genai.configure(api_key=gemini_key)
                         # Použití rychlého a bezplatného modelu Flash
-                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        model = genai.GenerativeModel('gemini-2.5-flash')
                         
                         news_text = "\n".join([f"- {a.get('headline')}: {a.get('summary')}" for a in news_data])
                         prompt = f"Přečti si tyto aktuální zprávy o {ticker_input}:\n{news_text}\n\nNapiš česky velmi stručné shrnutí (max 3 věty) toho nejdůležitějšího. Na úplný konec napiš na nový řádek 'Celkový sentiment: Pozitivní / Negativní / Neutrální'."
