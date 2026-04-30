@@ -26,7 +26,9 @@ if ticker_input:
         else:
             st.error(f"❌ Nepodařilo se najít data pro ticker '{ticker_input}'. Zkontroluj, zda je zadaný správně.")
     except Exception as e:
-        st.error("⚠️ Došlo k chybě při komunikaci s Yahoo Finance.")
+        st.error(f"⚠️ Došlo k chybě při komunikaci s Yahoo Finance: {e}")
+        st.info("💡 Tip: Zkontroluj, zda nezadáváš ticker ve formátu XTB (např. AAPL.US). Pro Yahoo Finance zadej pouze AAPL.")
+
 
 st.divider()
 
