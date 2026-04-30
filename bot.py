@@ -18,7 +18,10 @@ FINNHUB_KEY = os.getenv("FINNHUB_API_KEY")
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    response = requests.post(url, json=payload)
+    print(f"Odesílám na Telegram... Status kód: {response.status_code}")
+    if response.status_code != 200:
+        print(f"CHYBA TELEGRAMU: {response.text}")
 
 def get_data(ticker):
     # Zjednodušené stahování dat přes Finnhub (nebo YFinance jako záloha)
