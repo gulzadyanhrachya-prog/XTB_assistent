@@ -21,7 +21,7 @@ jobs:
           python-version: '3.10'
 
       - name: Instalace knihoven
-        run: pip install yfinance pandas requests numpy
+        run: pip install yfinance pandas requests numpy supabase
 
       - name: Spuštění bota
         env:
@@ -30,4 +30,6 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
           XTB_BALANCE: ${{ secrets.XTB_BALANCE }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python bot.py
