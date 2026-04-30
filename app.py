@@ -1,34 +1,51 @@
 import streamlit as st
 import yfinance as yf
+import requests
 
-# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---\nst.set_page_config(page_title="XTB Analytický Asistent", page_icon="📈", layout="centered")
+# --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
+st.set_page_config(page_title="XTB Analytický Asistent", page_icon="📈", layout="centered")
 
 st.title("📈 Můj XTB Analytický Asistent")
 st.markdown("Tato aplikace slouží jako podpora pro manuální obchodování. Spočítá ti přesné parametry obchodu tak, abys nikdy neriskoval více, než si určíš.")
 
 st.divider()
 
+# --- FUNKCE PRO STAŽENÍ DAT (S CACHINGEM A VLASTNÍ SESSION) ---
+# @st.cache_data zajistí, že si aplikace výsledek zapamatuje na 5 minut (300 sekund)
+@st.cache_data(ttl=300)
+def get_current_price(ticker_symbol):
+    # Vytvoříme vlastní spojení a budeme se tvářit jako běžný prohlížeč Chrome
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    
+    # Předáme naši "maskovanou" session do yfinance
+    stock = yf.Ticker(ticker_symbol, session=session)
+    hist = stock.history(period="1d")
+    
+    if not hist.empty:
+        return float(hist['Close'].iloc[-1])
+    return None
+
 # --- 1. MODUL: NAČTENÍ TRŽNÍCH DAT ---
 st.header("🔍 1. Vyhledání instrumentu")
 ticker_input = st.text_input("Zadej ticker akcie nebo ETF (např. AAPL, TSLA, SPY):", value="AAPL").upper()
 
-# Pokusíme se načíst aktuální cenu z Yahoo Finance
 current_price = 0.0
 if ticker_input:
     try:
-        # Vytvoření objektu tickeru a stažení historie za poslední den
-        stock = yf.Ticker(ticker_input)
-        hist = stock.history(period="1d")
+        # Zavoláme naši novou chytrou funkci
+        price = get_current_price(ticker_input)
         
-        if not hist.empty:
-            current_price = float(hist['Close'].iloc[-1])
+        if price is not None:
+            current_price = price
             st.success(f"✅ Aktuální cena **{ticker_input}**: {current_price:.2f} USD")
         else:
             st.error(f"❌ Nepodařilo se najít data pro ticker '{ticker_input}'. Zkontroluj, zda je zadaný správně.")
     except Exception as e:
         st.error(f"⚠️ Došlo k chybě při komunikaci s Yahoo Finance: {e}")
         st.info("💡 Tip: Zkontroluj, zda nezadáváš ticker ve formátu XTB (např. AAPL.US). Pro Yahoo Finance zadej pouze AAPL.")
-
 
 st.divider()
 
@@ -44,11 +61,9 @@ with col1:
 
 with col2:
     st.subheader("Parametry obchodu")
-    # Zde použijeme staženou cenu jako výchozí hodnotu (pokud se ji podařilo načíst)
     default_entry = current_price if current_price > 0 else 150.0
     entry_price = st.number_input("Vstupní cena (Entry):", min_value=0.1, value=default_entry, step=1.0)
     
-    # Automatický návrh Stop Lossu (např. 5 % pod aktuální cenou)
     default_sl = entry_price * 0.95
     stop_loss = st.number_input("Cena Stop Loss (SL):", min_value=0.1, value=default_sl, step=1.0)
 
