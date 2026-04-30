@@ -31,6 +31,8 @@ if supabase_url and supabase_key:
 @st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
     df = pd.DataFrame()
+    
+    # 1. Finnhub (US Akcie)
     finnhub_key = st.secrets.get("FINNHUB_API_KEY", None)
     if finnhub_key and "=" not in ticker_symbol and "^" not in ticker_symbol and "/" not in ticker_symbol:
         try:
@@ -43,15 +45,39 @@ def get_market_data(ticker_symbol):
                 df = df.sort_index()
         except Exception: pass
 
+    # 2. Twelve Data (Forex / Indexy)
+    twelve_key = st.secrets.get("TWELVEDATA_API_KEY", None)
+    if df.empty and twelve_key and "/" in ticker_symbol:
+        try:
+            url = f"https://api.twelvedata.com/time_series?symbol={ticker_symbol}&interval=1day&outputsize=500&apikey={twelve_key}"
+            res = requests.get(url).json()
+            if "values" in res:
+                df_td = pd.DataFrame(res["values"])
+                df_td['datetime'] = pd.to_datetime(df_td['datetime'])
+                df_td = df_td.set_index('datetime').astype(float)
+                df_td = df_td.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
+                df = df_td.sort_index()
+        except Exception: pass
+            
+    # 3. Yahoo Finance (Záloha)
     if df.empty:
         try:
-            df = yf.Ticker(ticker_symbol).history(period="2y")
+            yf_ticker = ticker_symbol
+            # Yahoo Finance potřebuje pro Forex formát EURUSD=X místo EUR/USD
+            if "/" in ticker_symbol:
+                yf_ticker = ticker_symbol.replace("/", "") + "=X"
+            df = yf.Ticker(yf_ticker).history(period="2y")
         except Exception: return None
         
     if df is None or df.empty:
         return None
         
+    # --- VÝPOČET POKROČILÝCH INDIKÁTORŮ ---
     try:
+        # Odstranění časové zóny (Yahoo Finance ji někdy přidává a rozbíjí to výpočty)
+        if df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+            
         df_weekly = df.resample('W').agg({'Close': 'last'})
         df_weekly['SMA_50_W'] = df_weekly['Close'].rolling(50).mean()
         df['Weekly_SMA_50'] = df_weekly['SMA_50_W'].reindex(df.index, method='ffill')
@@ -120,7 +146,7 @@ tab_calc, tab_scanner, tab_news, tab_journal, tab_backtest, tab_forward = st.tab
 # ==========================================
 with tab_calc:
     current_price = 0.0
-    atr = 1.0 # OCHRANA PROTI PÁDU APLIKACE
+    atr = 1.0 
     
     if ticker_input:
         df = get_market_data(ticker_input)
@@ -152,7 +178,6 @@ with tab_calc:
     st.divider()
     st.subheader("🛡️ Výpočet Risku a Trailing Stopu")
     
-    # BEZPEČNÝ PŘEPÍNAČ MÍSTO VNOŘENÝCH ZÁLOŽEK
     calc_type = st.radio("Vyber typ instrumentu pro výpočet:", ["📈 Akcie a ETF (Kusy)", "💱 CFD / Forex (Loty)"], horizontal=True)
 
     if calc_type == "📈 Akcie a ETF (Kusy)":
@@ -197,7 +222,8 @@ with tab_calc:
         st.info("Pro CFD zadej hodnotu 1 bodu. Logika výpočtu je stejná.")
         c3, c4 = st.columns(2)
         with c3:
-            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0, key="bal_cfd")
+            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=
+100.0, value=2071.0, step=100.0, key="bal_cfd")
             risk_pct_cfd = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1, key="risk_cfd")
         with c4:
             entry_cfd = st.number_input("Vstupní cena (Entry):", min_value=0.00001, value=current_price if current_price > 0 else 1.1000, format="%.5f", key="entry_cfd")
