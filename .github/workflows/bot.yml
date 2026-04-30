@@ -2,8 +2,11 @@ name: XTB Telegram Bot
 
 on:
   schedule:
-    - cron: '0 * * * *' # Spustí se každou hodinu v celou (např. 14:00, 15:00)
-  workflow_dispatch: # Umožní nám to spustit i ručně tlačítkem
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-bot:
