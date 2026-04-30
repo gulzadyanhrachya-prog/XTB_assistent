@@ -30,9 +30,19 @@ if SUPABASE_URL and SUPABASE_KEY:
     except: pass
 
 TICKERS_TO_SCAN = [
+    # Top US Tech & Blue Chips
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "CSCO", "NFLX", 
     "AMD", "INTC", "IBM", "CRM", "BA", "CAT", "CVX", "GS", "HD", "JNJ", "JPM", "KO", 
-    "EUR/USD", "GBP/USD", "USD/JPY", "BTC-USD", "ETH-USD"
+    "MCD", "MMM", "NKE", "PG", "UNH", "V", "WMT", "DIS",
+    # Top EU Akcie (Yahoo formát)
+    "ASML", "SAP", "NVO", "TMUS", "SNY", "MC.PA", "OR.PA", "RMS.PA",
+    # Hlavní Forex Páry (TwelveData/Yahoo formát)
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF", "AUD/USD", "USD/CAD", "NZD/USD", 
+    "EUR/GBP", "EUR/JPY", "GBP/JPY", "CHF/JPY", "EUR/AUD", "EUR/CHF", "AUD/JPY",
+    # Indexy (Yahoo formát)
+    "^GSPC", "^DJI", "^IXIC", "^RUT", "^VIX", "^FTSE", "^N225",
+    # Krypto (Yahoo formát)
+    "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOGE-USD"
 ]
 
 def send_telegram_message(text):
