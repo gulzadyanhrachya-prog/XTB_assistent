@@ -181,9 +181,10 @@ def scan_markets():
                 msg += f"• *Take Profit (TP):* {tp:.4f}\n"
                 
                 if "/" in ticker:
-                    msg += f"• *Objem:* {volume:.2f} Lotů *(Zkontroluj hodnotu bodu!)*\n\n"
+                    msg += f"• *Objem pro XTB:* ⚠️ **Spočítej v platformě!**\n"
+                    msg += f"_(Zadej SL {sl:.4f} a upravuj Loty, dokud červená ztráta nebude cca {risk_amount:.0f} CZK)_\n\n"
                 else:
-                    msg += f"• *Objem:* {volume:.2f} Kusů\n\n"
+                    msg += f"• *Objem pro XTB:* {volume:.2f} Kusů\n\n"
                     
                 msg += f"_(Riskováno {risk_amount:.2f} ze zůstatku {ACCOUNT_BALANCE})_"
                 
