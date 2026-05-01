@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 import google.generativeai as genai
 
-# --- TAJNÉ KLÍČE ---\nTELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# --- TAJNÉ KLÍČE ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY")
 TWELVE_KEY = os.getenv("TWELVEDATA_API_KEY")
@@ -26,9 +27,11 @@ db_client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         db_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    except: pass
+    except Exception as e: 
+        print(f"Chyba připojení k Supabase: {e}")
 
-# --- KORELAČNÍ MAPA (Sektory) ---\nSECTORS = {
+# --- KORELAČNÍ MAPA (Sektory) ---
+SECTORS = {
     "AAPL": "Tech", "MSFT": "Tech", "NVDA": "Tech", "AVGO": "Tech", "AMD": "Tech", "INTC": "Tech", "CSCO": "Tech", "IBM": "Tech",
     "GOOGL": "Comm", "META": "Comm", "NFLX": "Comm", "DIS": "Comm",
     "AMZN": "Consumer", "TSLA": "Consumer", "HD": "Consumer", "MCD": "Consumer", "NKE": "Consumer",
@@ -42,9 +45,12 @@ if SUPABASE_URL and SUPABASE_KEY:
 TICKERS_TO_SCAN = list(SECTORS.keys()) + ["EUR/USD", "GBP/USD", "USD/JPY", "^GSPC", "^IXIC"]
 
 def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    requests.post(url, json=payload)
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"Chyba odesílání Telegramu: {e}")
 
 def check_market_panic():
     try:
@@ -55,7 +61,6 @@ def check_market_panic():
     return False
 
 def check_ai_sentiment(ticker):
-    """AI Sentiment Filtr: Zeptá se Gemini, jestli firma nemá fatální problém."""
     if not GEMINI_KEY:
         return "⚠️ Chybí GEMINI_API_KEY v GitHub Secrets!"
     if not FINNHUB_KEY or "=" in ticker or "^" in ticker or "/" in ticker:
@@ -65,7 +70,7 @@ def check_ai_sentiment(ticker):
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={start_date}&to={end_date}&token={FINNHUB_KEY}"
-        news = requests.get(url).json()
+        news = requests.get(url, timeout=10).json()
         
         if news and isinstance(news, list):
             news_text = "\n".join([f"- {a.get('headline')}" for a in news[:5]])
@@ -79,18 +84,13 @@ def check_ai_sentiment(ticker):
     return "BEZPECNE"
 
 def was_signal_sent_recently(ticker, hours=24):
-    """ANTI-SPAM FILTR: Zkontroluje v databázi, jestli už signál nebyl odeslán v posledních X hodinách."""
     if not db_client:
-        return False # Pokud nemáme databázi, nemůžeme to ověřit
+        return False 
     try:
-        # Vypočítáme časový limit (např. před 24 hodinami)
         time_threshold = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
-        
-        # Podíváme se do tabulky bot_signals, jestli tam je záznam pro tento ticker novější než náš limit
         res = db_client.table("bot_signals").select("Datum").eq("Instrument", ticker).gte("Datum", time_threshold).execute()
-        
         if res.data and len(res.data) > 0:
-            return True # Signál už byl nedávno odeslán
+            return True 
     except Exception as e:
         print(f"Chyba při kontrole historie signálů: {e}")
     return False
@@ -102,7 +102,7 @@ def get_data(ticker):
             end = int(time.time())
             start = end - (2 * 365 * 24 * 60 * 60) 
             url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={start}&to={end}&token={FINNHUB_KEY}"
-            res = requests.get(url).json()
+            res = requests.get(url, timeout=10).json()
             if res.get("s") == "ok":
                 df = pd.DataFrame({"High": res["h"], "Low": res["l"], "Close": res["c"]}, index=pd.to_datetime(res["t"], unit="s"))
         except: pass
@@ -110,7 +110,7 @@ def get_data(ticker):
     if df.empty and TWELVE_KEY and "/" in ticker:
         try:
             url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval=1day&outputsize=500&apikey={TWELVE_KEY}"
-            res = requests.get(url).json()
+            res = requests.get(url, timeout=10).json()
             if "values" in res:
                 df_td = pd.DataFrame(res["values"])
                 df_td['datetime'] = pd.to_datetime(df_td['datetime'])
@@ -125,46 +125,64 @@ def get_data(ticker):
         except: return None
         
     if not df.empty and len(df) > 50:
-        # Indikátory
-        delta = df['Close'].diff()
-        gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
-        loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-        
-        df['BB_Mid'] = df['Close'].rolling(window=20).mean()
-        df['BB_Std'] = df['Close'].rolling(window=20).std()
-        df['BB_Low'] = df['BB_Mid'] - (df['BB_Std'] * 2)
-        
-        # Pro Breakout strategii
-        df['High_20'] = df['High'].rolling(window=20).max().shift(1)
-        ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-        ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = ema12 - ema26
-        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        
-        high_low = df['High'] - df['Low']
-        high_close = np.abs(df['High'] - df['Close'].shift())
-        low_close = np.abs(df['Low'] - df['Close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        df['ATR'] = np.max(ranges, axis=1).rolling(14).mean()
-        return df
+        try:
+            delta = df['Close'].diff()
+            gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+            loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+            df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+            
+            df['BB_Mid'] = df['Close'].rolling(window=20).mean()
+            df['BB_Std'] = df['Close'].rolling(window=20).std()
+            df['BB_Low'] = df['BB_Mid'] - (df['BB_Std'] * 2)
+            
+            df['High_20'] = df['High'].rolling(window=20).max().shift(1)
+            ema12 = df['Close'].ewm(span=12, adjust=False).mean()
+            ema26 = df['Close'].ewm(span=26, adjust=False).mean()
+            df['MACD'] = ema12 - ema26
+            df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+            
+            high_low = df['High'] - df['Low']
+            high_close = np.abs(df['High'] - df['Close'].shift())
+            low_close = np.abs(df['Low'] - df['Close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            df['ATR'] = np.max(ranges, axis=1).rolling(14).mean()
+            return df
+        except Exception as e:
+            print(f"Chyba výpočtu indikátorů pro {ticker}: {e}")
     return None
 
 def optimize_strategy(df):
     best_profit = -9999
     best_params = None
-    records = df[['High', 'Low', 'Close', 'RSI', 'BB_Low', 'ATR', 'High_20', 'MACD', 'MACD_Signal']].to_dict('records')
-    
-    # 1. Test Mean-Reversion (Sleva)
-    for rsi_val in [30, 35, 40]:
-        for sl_val in [1.5, 2.0, 3.0]:
-            for tp_val in [3.0, 4.0, 5.0]:
+    try:
+        records = df[['High', 'Low', 'Close', 'RSI', 'BB_Low', 'ATR', 'High_20', 'MACD', 'MACD_Signal']].to_dict('records')
+        
+        for rsi_val in [30, 35, 40]:
+            for sl_val in [1.5, 2.0, 3.0]:
+                for tp_val in [3.0, 4.0, 5.0]:
+                    trades = 0; wins = 0; profit = 0; in_trade = False
+                    entry = 0; sl = 0; tp = 0
+                    for row in records:
+                        if pd.isna(row['RSI']) or pd.isna(row['ATR']): continue
+                        if not in_trade:
+                            if row['RSI'] < rsi_val and row['Close'] < row['BB_Low']:
+                                entry = row['Close']; sl = entry - (sl_val * row['ATR']); tp = entry + (tp_val * row['ATR'])
+                                in_trade = True
+                        else:
+                            if row['Low'] <= sl: profit -= (entry - sl); trades += 1; in_trade = False
+                            elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
+                    if trades > 0 and profit > best_profit:
+                        best_profit = profit
+                        best_params = {"type": "Sleva (Mean-Reversion)", "rsi": rsi_val, "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
+
+        for sl_val in [1.5, 2.0]:
+            for tp_val in [3.0, 5.0, 7.0]:
                 trades = 0; wins = 0; profit = 0; in_trade = False
                 entry = 0; sl = 0; tp = 0
                 for row in records:
-                    if pd.isna(row['RSI']) or pd.isna(row['ATR']): continue
+                    if pd.isna(row['High_20']) or pd.isna(row['ATR']): continue
                     if not in_trade:
-                        if row['RSI'] < rsi_val and row['Close'] < row['BB_Low']:
+                        if row['Close'] > row['High_20'] and row['MACD'] > row['MACD_Signal']:
                             entry = row['Close']; sl = entry - (sl_val * row['ATR']); tp = entry + (tp_val * row['ATR'])
                             in_trade = True
                     else:
@@ -172,28 +190,12 @@ def optimize_strategy(df):
                         elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
                 if trades > 0 and profit > best_profit:
                     best_profit = profit
-                    best_params = {"type": "Sleva (Mean-Reversion)", "rsi": rsi_val, "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
-
-    # 2. Test Breakout (Trend)
-    for sl_val in [1.5, 2.0]:
-        for tp_val in [3.0, 5.0, 7.0]:
-            trades = 0; wins = 0; profit = 0; in_trade = False
-            entry = 0; sl = 0; tp = 0
-            for row in records:
-                if pd.isna(row['High_20']) or pd.isna(row['ATR']): continue
-                if not in_trade:
-                    if row['Close'] > row['High_20'] and row['MACD'] > row['MACD_Signal']:
-                        entry = row['Close']; sl = entry - (sl_val * row['ATR']); tp = entry + (tp_val * row['ATR'])
-                        in_trade = True
-                else:
-                    if row['Low'] <= sl: profit -= (entry - sl); trades += 1; in_trade = False
-                    elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
-            if trades > 0 and profit > best_profit:
-                best_profit = profit
-                best_params = {"type": "Trend (Breakout)", "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
-                    
-    if best_params and best_params["profit"] > 0:
-        return best_params
+                    best_params = {"type": "Trend (Breakout)", "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
+                        
+        if best_params and best_params["profit"] > 0:
+            return best_params
+    except Exception as e:
+        print(f"Chyba optimalizace: {e}")
     return None
 
 def scan_markets():
@@ -226,7 +228,6 @@ def scan_markets():
                     signal_triggered = True
             
             if signal_triggered:
-                # --- ANTI-SPAM FILTR ---
                 if was_signal_sent_recently(ticker, hours=24):
                     print(f"Anti-Spam: Signál pro {ticker} už byl odeslán za posledních 24 hodin. Přeskakuji.")
                     continue
@@ -303,11 +304,15 @@ def scan_markets():
                         "Status": "Forward-Test"
                     }
                     db_client.table("bot_signals").insert(record).execute()
-                except: pass
+                except Exception as e: 
+                    print(f"Chyba zápisu do DB: {e}")
             time.sleep(1)
         print(f"Odesláno {len(filtered_signals)} filtrovaných signálů.")
     else:
         print("Trhy jsou klidné, žádný signál nebyl odeslán.")
 
 if __name__ == "__main__":
-    scan_markets()
+    try:
+        scan_markets()
+    except Exception as e:
+        print(f"Kritická chyba bota: {e}")
