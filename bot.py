@@ -8,8 +8,7 @@ from datetime import datetime, timedelta
 from supabase import create_client, Client
 import google.generativeai as genai
 
-# --- TAJNÉ KLÍČE ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# --- TAJNÉ KLÍČE ---\nTELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY")
 TWELVE_KEY = os.getenv("TWELVEDATA_API_KEY")
@@ -29,8 +28,7 @@ if SUPABASE_URL and SUPABASE_KEY:
         db_client = create_client(SUPABASE_URL, SUPABASE_KEY)
     except: pass
 
-# --- KORELAČNÍ MAPA (Sektory) ---
-SECTORS = {
+# --- KORELAČNÍ MAPA (Sektory) ---\nSECTORS = {
     "AAPL": "Tech", "MSFT": "Tech", "NVDA": "Tech", "AVGO": "Tech", "AMD": "Tech", "INTC": "Tech", "CSCO": "Tech", "IBM": "Tech",
     "GOOGL": "Comm", "META": "Comm", "NFLX": "Comm", "DIS": "Comm",
     "AMZN": "Consumer", "TSLA": "Consumer", "HD": "Consumer", "MCD": "Consumer", "NKE": "Consumer",
@@ -79,6 +77,23 @@ def check_ai_sentiment(ticker):
     except Exception as e:
         print(f"AI Chyba: {e}")
     return "BEZPECNE"
+
+def was_signal_sent_recently(ticker, hours=24):
+    """ANTI-SPAM FILTR: Zkontroluje v databázi, jestli už signál nebyl odeslán v posledních X hodinách."""
+    if not db_client:
+        return False # Pokud nemáme databázi, nemůžeme to ověřit
+    try:
+        # Vypočítáme časový limit (např. před 24 hodinami)
+        time_threshold = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
+        
+        # Podíváme se do tabulky bot_signals, jestli tam je záznam pro tento ticker novější než náš limit
+        res = db_client.table("bot_signals").select("Datum").eq("Instrument", ticker).gte("Datum", time_threshold).execute()
+        
+        if res.data and len(res.data) > 0:
+            return True # Signál už byl nedávno odeslán
+    except Exception as e:
+        print(f"Chyba při kontrole historie signálů: {e}")
+    return False
 
 def get_data(ticker):
     df = pd.DataFrame()
@@ -200,7 +215,7 @@ def scan_markets():
                 
             current_price = df['Close'].iloc[-1]
             atr = df['ATR'].iloc[-1]
-            current_rsi = df['RSI'].iloc[-1] # Uložíme si aktuální RSI
+            current_rsi = df['RSI'].iloc[-1] 
             signal_triggered = False
             
             if best_setup['type'] == "Sleva (Mean-Reversion)":
@@ -211,6 +226,11 @@ def scan_markets():
                     signal_triggered = True
             
             if signal_triggered:
+                # --- ANTI-SPAM FILTR ---
+                if was_signal_sent_recently(ticker, hours=24):
+                    print(f"Anti-Spam: Signál pro {ticker} už byl odeslán za posledních 24 hodin. Přeskakuji.")
+                    continue
+                
                 dynamic_risk_pct = round(max(0.5, min(2.5, 1.0 * (best_setup['win_rate'] / 50))), 2)
                 
                 entry = current_price
@@ -227,7 +247,7 @@ def scan_markets():
                     "ticker": ticker, "sector": SECTORS.get(ticker, "Other"),
                     "setup": best_setup, "entry": entry, "sl": sl, "tp": tp,
                     "risk_pct": dynamic_risk_pct, "risk_czk": risk_amount, "profit_czk": profit_amount,
-                    "volume": volume, "rrr": rrr, "rsi": current_rsi # Přidáno RSI do paměti
+                    "volume": volume, "rrr": rrr, "rsi": current_rsi 
                 })
         time.sleep(1.5) 
         
@@ -252,7 +272,7 @@ def scan_markets():
             
             msg = f"🚨 *AI SIGNÁL: {ticker}* ({sig['sector']}) 🚨\n\n"
             msg += f"🎯 *Strategie:* {sig['setup']['type']}\n"
-            msg += f"📈 *Aktuální RSI:* {sig['rsi']:.1f}\n" # Zobrazení RSI ve zprávě
+            msg += f"📈 *Aktuální RSI:* {sig['rsi']:.1f}\n" 
             msg += f"🧠 *Auto-Tuning:* Úspěšnost *{sig['setup']['win_rate']:.1f} %* ({sig['setup']['trades']} obchodů)\n"
             msg += f"📰 *AI Sentiment:* {ai_status}\n\n"
             
