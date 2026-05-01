@@ -129,7 +129,8 @@ def get_data(ticker):
             delta = df['Close'].diff()
             gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-            df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+            df['RSI']
+ = 100 - (100 / (1 + (gain / loss)))
             
             df['BB_Mid'] = df['Close'].rolling(window=20).mean()
             df['BB_Std'] = df['Close'].rolling(window=20).std()
@@ -185,9 +186,9 @@ def optimize_strategy(df):
                         if row['Close'] > row['High_20'] and row['MACD'] > row['MACD_Signal']:
                             entry = row['Close']; sl = entry - (sl_val * row['ATR']); tp = entry + (tp_val * row['ATR'])
                             in_trade = True
-                    else:
-                        if row['Low'] <= sl: profit -= (entry - sl); trades += 1; in_trade = False
-                        elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
+                        else:
+                            if row['Low'] <= sl: profit -= (entry - sl); trades += 1; in_trade = False
+                            elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
                 if trades > 0 and profit > best_profit:
                     best_profit = profit
                     best_params = {"type": "Trend (Breakout)", "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
@@ -306,6 +307,10 @@ def scan_markets():
                     db_client.table("bot_signals").insert(record).execute()
                 except Exception as e: 
                     print(f"Chyba zápisu do DB: {e}")
+                    send_telegram_message(f"⚠️ *CHYBA ANTI-SPAMU:* Nepodařilo se zapsat signál do Supabase. Zkontroluj, zda má tabulka `bot_signals` všechny sloupce (včetně `Status`).\nDetail: `{e}`")
+            else:
+                send_telegram_message("⚠️ *CHYBA ANTI-SPAMU:* Bot není připojen k Supabase. Zkontroluj `SUPABASE_URL` a `SUPABASE_KEY` v GitHub Secrets!")
+                
             time.sleep(1)
         print(f"Odesláno {len(filtered_signals)} filtrovaných signálů.")
     else:
