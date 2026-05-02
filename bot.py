@@ -129,8 +129,7 @@ def get_data(ticker):
             delta = df['Close'].diff()
             gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
             loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-            df['RSI']
- = 100 - (100 / (1 + (gain / loss)))
+            df['RSI'] = 100 - (100 / (1 + (gain / loss)))
             
             df['BB_Mid'] = df['Close'].rolling(window=20).mean()
             df['BB_Std'] = df['Close'].rolling(window=20).std()
