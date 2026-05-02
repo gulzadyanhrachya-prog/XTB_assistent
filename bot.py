@@ -44,14 +44,6 @@ SECTORS = {
 
 TICKERS_TO_SCAN = list(SECTORS.keys()) + ["EUR/USD", "GBP/USD", "USD/JPY", "^GSPC", "^IXIC"]
 
-def get_usd_czk_rate():
-    try:
-        df = yf.Ticker("USDCZK=X").history(period="1d")
-        if not df.empty:
-            return float(df['Close'].iloc[-1])
-    except: pass
-    return 23.5
-
 def send_telegram_message(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -112,8 +104,7 @@ def get_data(ticker):
             url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={start}&to={end}&token={FINNHUB_KEY}"
             res = requests.get(url, timeout=10).json()
             if res.get("s") == "ok":
-                df = pd.DataFrame({"High": res["h"], "Low": res["l"], "Close": res["c"]}, index=
-pd.to_datetime(res["t"], unit="s"))
+                df = pd.DataFrame({"High": res["h"], "Low": res["l"], "Close": res["c"]}, index=pd.to_datetime(res["t"], unit="s"))
         except: pass
 
     if df.empty and TWELVE_KEY and "/" in ticker:
@@ -206,6 +197,14 @@ def optimize_strategy(df):
     except Exception as e:
         print(f"Chyba optimalizace: {e}")
     return None
+
+def get_usd_czk_rate():
+    try:
+        df = yf.Ticker("USDCZK=X").history(period="1d")
+        if not df.empty:
+            return float(df['Close'].iloc[-1])
+    except: pass
+    return 23.5
 
 def scan_markets():
     if check_market_panic():
