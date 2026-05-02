@@ -44,6 +44,14 @@ SECTORS = {
 
 TICKERS_TO_SCAN = list(SECTORS.keys()) + ["EUR/USD", "GBP/USD", "USD/JPY", "^GSPC", "^IXIC"]
 
+def get_usd_czk_rate():
+    try:
+        df = yf.Ticker("USDCZK=X").history(period="1d")
+        if not df.empty:
+            return float(df['Close'].iloc[-1])
+    except: pass
+    return 23.5
+
 def send_telegram_message(text):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -83,6 +91,28 @@ def check_ai_sentiment(ticker):
         print(f"AI Chyba: {e}")
     return "BEZPECNE"
 
+def check_insider_sentiment(ticker):
+    """Zkontroluje, zda ředitelé a manažeři firmy nakupují vlastní akcie."""
+    if not FINNHUB_KEY or "=" in ticker or "^" in ticker or "/" in ticker or "-USD" in ticker:
+        return "⚪ N/A (Forex/Krypto/Index)"
+    try:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        url = f"https://finnhub.io/api/v1/stock/insider-sentiment?symbol={ticker}&from={start_date}&to={end_date}&token={FINNHUB_KEY}"
+        res = requests.get(url, timeout=10).json()
+        if "data" in res and len(res["data"]) > 0:
+            # Výpočet průměrného Monthly Share Purchase Ratio (MSPR)
+            avg_mspr = sum([item['mspr'] for item in res['data']]) / len(res['data'])
+            if avg_mspr > 0:
+                return f"🟢 Pozitivní (Insiders nakupují, MSPR: {avg_mspr:.2f})"
+            elif avg_mspr < 0:
+                return f"🔴 Negativní (Insiders prodávají, MSPR: {avg_mspr:.2f})"
+            else:
+                return "⚪ Neutrální"
+    except Exception as e:
+        print(f"Chyba Insider dat pro {ticker}: {e}")
+    return "⚪ Nedostatek dat"
+
 def was_signal_sent_recently(ticker, hours=24):
     if not db_client:
         return False 
@@ -97,7 +127,7 @@ def was_signal_sent_recently(ticker, hours=24):
 
 def get_data(ticker):
     df = pd.DataFrame()
-    if FINNHUB_KEY and "=" not in ticker and "^" not in ticker and "/" not in ticker:
+    if FINNHUB_KEY and "=" not in ticker and "^" not in ticker and "/" not in ticker and "-USD" not in ticker:
         try:
             end = int(time.time())
             start = end - (2 * 365 * 24 * 60 * 60) 
@@ -152,15 +182,21 @@ def get_data(ticker):
     return None
 
 def optimize_strategy(df):
-    best_profit = -9999
+    """
+    Vylepšený AI Mozek: Optimalizuje podle SORTINO RATIO (ochrana před velkými propady)
+    místo pouhého Win Ratu.
+    """
+    best_sortino = -9999
     best_params = None
     try:
         records = df[['High', 'Low', 'Close', 'RSI', 'BB_Low', 'ATR', 'High_20', 'MACD', 'MACD_Signal']].to_dict('records')
         
+        # 1. Test Mean-Reversion (Sleva)
         for rsi_val in [30, 35, 40]:
             for sl_val in [1.5, 2.0, 3.0]:
                 for tp_val in [3.0, 4.0, 5.0]:
-                    trades = 0; wins = 0; profit = 0; in_trade = False
+                    trade_results = []
+                    in_trade = False
                     entry = 0; sl = 0; tp = 0
                     for row in records:
                         if pd.isna(row['RSI']) or pd.isna(row['ATR']): continue
@@ -169,15 +205,32 @@ def optimize_strategy(df):
                                 entry = row['Close']; sl = entry - (sl_val * row['ATR']); tp = entry + (tp_val * row['ATR'])
                                 in_trade = True
                         else:
-                            if row['Low'] <= sl: profit -= (entry - sl); trades += 1; in_trade = False
-                            elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
-                    if trades > 0 and profit > best_profit:
-                        best_profit = profit
-                        best_params = {"type": "Sleva (Mean-Reversion)", "rsi": rsi_val, "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
+                            if row['Low'] <= sl: 
+                                trade_results.append(-(entry - sl))
+                                in_trade = False
+                            elif row['High'] >= tp: 
+                                trade_results.append(tp - entry)
+                                in_trade = False
+                                
+                    if len(trade_results) > 0:
+                        total_profit = sum(trade_results)
+                        if total_profit > 0:
+                            returns = np.array(trade_results)
+                            expected_return = np.mean(returns)
+                            downside_returns = returns[returns < 0]
+                            downside_std = np.std(downside_returns) if len(downside_returns) > 0 else 1e-5
+                            sortino = expected_return / downside_std
+                            
+                            if sortino > best_sortino:
+                                best_sortino = sortino
+                                wins = len(returns[returns > 0])
+                                best_params = {"type": "Sleva (Mean-Reversion)", "rsi": rsi_val, "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/len(trade_results))*100, "trades": len(trade_results), "profit": total_profit, "sortino": sortino}
 
+        # 2. Test Breakout (Trend)
         for sl_val in [1.5, 2.0]:
             for tp_val in [3.0, 5.0, 7.0]:
-                trades = 0; wins = 0; profit = 0; in_trade = False
+                trade_results = []
+                in_trade = False
                 entry = 0; sl = 0; tp = 0
                 for row in records:
                     if pd.isna(row['High_20']) or pd.isna(row['ATR']): continue
@@ -185,26 +238,33 @@ def optimize_strategy(df):
                         if row['Close'] > row['High_20'] and row['MACD'] > row['MACD_Signal']:
                             entry = row['Close']; sl = entry - (sl_val * row['ATR']); tp = entry + (tp_val * row['ATR'])
                             in_trade = True
-                        else:
-                            if row['Low'] <= sl: profit -= (entry - sl); trades += 1; in_trade = False
-                            elif row['High'] >= tp: profit += (tp - entry); wins += 1; trades += 1; in_trade = False
-                if trades > 0 and profit > best_profit:
-                    best_profit = profit
-                    best_params = {"type": "Trend (Breakout)", "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/trades)*100, "trades": trades, "profit": profit}
+                    else:
+                        if row['Low'] <= sl: 
+                            trade_results.append(-(entry - sl))
+                            in_trade = False
+                        elif row['High'] >= tp: 
+                            trade_results.append(tp - entry)
+                            in_trade = False
+                            
+                if len(trade_results) > 0:
+                    total_profit = sum(trade_results)
+                    if total_profit > 0:
+                        returns = np.array(trade_results)
+                        expected_return = np.mean(returns)
+                        downside_returns = returns[returns < 0]
+                        downside_std = np.std(downside_returns) if len(downside_returns) > 0 else 1e-5
+                        sortino = expected_return / downside_std
                         
+                        if sortino > best_sortino:
+                            best_sortino = sortino
+                            wins = len(returns[returns > 0])
+                            best_params = {"type": "Trend (Breakout)", "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/len(trade_results))*100, "trades": len(trade_results), "profit": total_profit, "sortino": sortino}
+                    
         if best_params and best_params["profit"] > 0:
             return best_params
     except Exception as e:
         print(f"Chyba optimalizace: {e}")
     return None
-
-def get_usd_czk_rate():
-    try:
-        df = yf.Ticker("USDCZK=X").history(period="1d")
-        if not df.empty:
-            return float(df['Close'].iloc[-1])
-    except: pass
-    return 23.5
 
 def scan_markets():
     if check_market_panic():
@@ -271,7 +331,8 @@ def scan_markets():
                 
                 raw_signals.append({
                     "ticker": ticker, "sector": SECTORS.get(ticker, "Other"),
-                    "setup": best_setup, "entry": entry, "sl": sl, "tp": tp,
+                    "setup":
+ best_setup, "entry": entry, "sl": sl, "tp": tp,
                     "risk_pct": dynamic_risk_pct, "risk_czk": risk_amount_czk, "profit_czk": profit_amount_czk,
                     "volume": volume, "rrr": rrr, "rsi": current_rsi 
                 })
@@ -279,7 +340,8 @@ def scan_markets():
         
     filtered_signals = []
     sectors_used = set()
-    raw_signals.sort(key=lambda x: x['setup']['profit'], reverse=True)
+    # Nyní řadíme signály podle SORTINO RATIO (nejbezpečnější strategie vyhrává)
+    raw_signals.sort(key=lambda x: x['setup']['sortino'], reverse=True)
     
     for sig in raw_signals:
         if sig['sector'] not in sectors_used or sig['sector'] == "Other":
@@ -290,17 +352,23 @@ def scan_markets():
         for sig in filtered_signals:
             ticker = sig['ticker']
             
+            # 1. AI Sentiment Filtr
             ai_status = check_ai_sentiment(ticker)
             if "KRIZE" in ai_status:
                 print(f"AI zablokovalo nákup {ticker} kvůli špatným zprávám!")
                 send_telegram_message(f"🛑 *AI ZABLOKOVALO NÁKUP: {ticker}*\nTechnika hlásí nákup, ale Google Gemini detekoval fundamentální KRIZI ve zprávách. Obchod zrušen.")
                 continue
+                
+            # 2. Insider Trading Filtr
+            insider_status = check_insider_sentiment(ticker)
             
             msg = f"🚨 *AI SIGNÁL: {ticker}* ({sig['sector']}) 🚨\n\n"
             msg += f"🎯 *Strategie:* {sig['setup']['type']}\n"
             msg += f"📈 *Aktuální RSI:* {sig['rsi']:.1f}\n" 
             msg += f"🧠 *Auto-Tuning:* Úspěšnost *{sig['setup']['win_rate']:.1f} %* ({sig['setup']['trades']} obchodů)\n"
-            msg += f"📰 *AI Sentiment:* {ai_status}\n\n"
+            msg += f"🛡️ *Sortino Ratio:* {sig['setup']['sortino']:.2f} (Ochrana proti propadům)\n"
+            msg += f"📰 *AI Sentiment:* {ai_status}\n"
+            msg += f"🕵️‍♂️ *Insider Trading:* {insider_status}\n\n"
             
             msg += f"⚖️ *Dynamický Risk:* {sig['risk_pct']}% (Upraveno dle Win Rate)\n"
             msg += f"• *Vstup (Entry):* {sig['entry']:.4f}\n"
@@ -315,7 +383,7 @@ def scan_markets():
                 msg += f"💰 *Finance:* Risk **{sig['risk_czk']:.2f} CZK** ➡️ Zisk cca **{sig['profit_czk']:.2f} CZK** (RRR 1:{sig['rrr']:.2f})\n"
                 
             msg += f"🏦 _(Zůstatek účtu: {ACCOUNT_BALANCE} CZK)_\n"
-            msg += f"💱 _(Počítáno s kurzem USD/CZK: {usd_czk_rate:.2f})_"
+            msg += f"💱 _(Počítáno s kurzem USD/CZK: {usd_czk_rate:.2f})"
             
             send_telegram_message(msg)
             
@@ -332,7 +400,6 @@ def scan_markets():
                     db_client.table("bot_signals").insert(record).execute()
                 except Exception as e: 
                     print(f"Chyba zápisu do DB: {e}")
-                    send_telegram_message(f"⚠️ *CHYBA ANTI-SPAMU:* Nepodařilo se zapsat signál do Supabase.\nDetail: `{e}`")
             time.sleep(1)
         print(f"Odesláno {len(filtered_signals)} filtrovaných signálů.")
     else:
