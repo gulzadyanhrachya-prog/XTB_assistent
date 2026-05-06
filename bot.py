@@ -23,8 +23,6 @@ try:
 except:
     ACCOUNT_BALANCE = 10000.0
 
-RISK_PCT = 1.5  
-
 # Připojení k databázi
 db_client = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -72,7 +70,6 @@ def check_market_panic():
     return False
 
 def get_macro_regime():
-    """Stáhne data z FEDu (Výnosová křivka T10Y2Y). Pokud je < 0, hrozí recese."""
     if not FRED_KEY:
         return "⚪ Neznámé (Chybí FRED API)", False
     try:
@@ -80,7 +77,7 @@ def get_macro_regime():
         res = requests.get(url, timeout=10).json()
         val = float(res['observations'][0]['value'])
         if val < 0:
-            return f"🔴 Riziko recese (Inverzní křivka: {val}%)", True # True = Defenzivní mód
+            return f"🔴 Riziko recese (Inverzní křivka: {val}%)", True 
         else:
             return f"🟢 Normální růst (Křivka: {val}%)", False
     except Exception as e:
@@ -104,7 +101,6 @@ def check_insider_sentiment(ticker):
     return "⚪ Nedostatek dat"
 
 def ai_investment_committee(ticker, strategy, rsi, insider_status, macro_status):
-    """AI Komise: Gemini zhodnotí všechna data a vydá finální verdikt."""
     if not GEMINI_KEY:
         return "⚠️ Chybí GEMINI_API_KEY", "SCHVÁLENO"
     if not FINNHUB_KEY or "=" in ticker or "^" in ticker or "/" in ticker:
@@ -146,12 +142,20 @@ def ai_investment_committee(ticker, strategy, rsi, insider_status, macro_status)
         return f"Chyba AI: {e}", "SCHVÁLENO"
 
 def was_signal_sent_recently(ticker, hours=24):
+    """NEPRŮSTŘELNÝ ANTI-SPAM: Počítá časový rozdíl přímo v Pythonu."""
     if not db_client: return False 
     try:
-        time_threshold = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
-        res = db_client.table("bot_signals").select("Datum").eq("Instrument", ticker).gte("Datum", time_threshold).execute()
-        if res.data and len(res.data) > 0: return True 
-    except: pass
+        # Stáhneme jen ten úplně poslední signál pro daný ticker
+        res = db_client.table("bot_signals").select("Datum").eq("Instrument", ticker).order("Datum", desc=True).limit(1).execute()
+        if res.data and len(res.data) > 0:
+            last_date_str = res.data[0]['Datum']
+            # Převedeme text z databáze na skutečný čas
+            last_date = datetime.strptime(last_date_str, "%Y-%m-%d %H:%M")
+            # Pokud od posledního signálu uběhlo méně než X hodin, je to spam
+            if (datetime.now() - last_date) < timedelta(hours=hours):
+                return True 
+    except Exception as e:
+        print(f"Chyba Anti-Spamu: {e}")
     return False
 
 def get_data(ticker):
@@ -216,7 +220,6 @@ def optimize_strategy(df, is_defensive_mode):
     try:
         records = df[['High', 'Low', 'Close', 'RSI', 'BB_Low', 'ATR', 'High_20', 'MACD', 'MACD_Signal']].to_dict('records')
         
-        # 1. Test Mean-Reversion (Sleva)
         for rsi_val in [30, 35, 40]:
             for sl_val in [1.5, 2.0, 3.0]:
                 for tp_val in [3.0, 4.0, 5.0]:
@@ -251,7 +254,6 @@ def optimize_strategy(df, is_defensive_mode):
                                 wins = len(returns[returns > 0])
                                 best_params = {"type": "Sleva (Mean-Reversion)", "rsi": rsi_val, "sl_atr": sl_val, "tp_atr": tp_val, "win_rate": (wins/len(trade_results))*100, "trades": len(trade_results), "profit": total_profit, "sortino": sortino}
 
-        # 2. Test Breakout (Trend) - ZAKÁZÁNO v defenzivním módu
         if not is_defensive_mode:
             for sl_val in [1.5, 2.0]:
                 for tp_val in [3.0, 5.0, 7.0]:
@@ -298,11 +300,8 @@ def scan_markets():
         return
 
     macro_status, is_defensive = get_macro_regime()
-    print(f"Makro režim: {macro_status}")
-
     usd_czk_rate = get_usd_czk_rate()
-    print(f"Aktuální kurz USD/CZK: {usd_czk_rate:.2f}")
-
+    
     raw_signals = []
     print(f"Začínám AI skenování {len(TICKERS_TO_SCAN)} instrumentů...")
     
@@ -329,7 +328,8 @@ def scan_markets():
             
             if signal_triggered:
                 if was_signal_sent_recently(ticker, hours=24):
-                    print(f"Anti-Spam: Signál pro {ticker} přeskočen.")
+                    print(f"Anti-Spam: Signál pro {ticker} přes
+kočen.")
                     continue
                 
                 dynamic_risk_pct = round(max(0.5, min(2.5, 1.0 * (best_setup['win_rate'] / 50))), 2)
@@ -372,8 +372,7 @@ def scan_markets():
     for sig in raw_signals:
         if sig['sector'] not in sectors_used or sig['sector'] == "Other":
             filtered_signals.append(sig)
-            sectors_used.add(sig
-['sector'])
+            sectors_used.add(sig['sector'])
 
     if filtered_signals:
         for sig in filtered_signals:
