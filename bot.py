@@ -328,8 +328,7 @@ def scan_markets():
             
             if signal_triggered:
                 if was_signal_sent_recently(ticker, hours=24):
-                    print(f"Anti-Spam: Signál pro {ticker} přes
-kočen.")
+                    print(f"Anti-Spam: Signál pro {ticker} přeskočen.")
                     continue
                 
                 dynamic_risk_pct = round(max(0.5, min(2.5, 1.0 * (best_setup['win_rate'] / 50))), 2)
