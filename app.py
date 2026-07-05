@@ -4,96 +4,64 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import requests
-import time
 from datetime import datetime, timedelta
-from supabase import create_client, Client
 
 # --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
 st.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
 st.title("📈 Můj XTB Trading Terminál (Hedge Fund Edice)")
-st.markdown("Kalkulačka, Skener, AI Zprávy, Deník, Backtest a **Forward-Testing Bota**.")
+st.markdown("Kalkulačka, Skener Všeho, AI Zprávy, Deník & Audit, Backtest a Forward-Testing.")
 
-# --- INICIALIZACE PAMĚTI A DATABÁZE ---
+# --- INICIALIZACE PAMĚTI ---
 if 'journal' not in st.session_state:
     st.session_state.journal = []
-if 'db_connected' not in st.session_state:
-    st.session_state.db_connected = False
 
-supabase_url = st.secrets.get("SUPABASE_URL", None)
-supabase_key = st.secrets.get("SUPABASE_KEY", None)
-db_client = None
+# --- DATABÁZE TICKERŮ PRO SKENER (MULTI-ASSET) ---
+TICKER_DATABASE = {
+    "🇨🇿 ČR Akcie (BCPP)": ["CEZ.PR", "MONET.PR", "KOFOL.PR", "VIG.PR", "TABAK.PR"],
+    "🇵🇱 Polsko (GPW)": ["PKO.WA", "PKN.WA", "ALE.WA", "KGH.WA", "PZU.WA", "CDR.WA", "DNP.WA"],
+    "🇪🇺 Evropa Mainstream": ["BMW.DE", "SAP.DE", "SIE.DE", "AIR.PA", "MC.PA", "ASML.AS", "VOW3.DE"],
+    "🇺🇸 US Akcie (Výběr)": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "WMT", "DIS", "XOM", "KO"],
+    "🌍 Globální ETF": ["SPY", "QQQ", "IWM", "EEM", "VGK", "IAU", "VNQ"],
+    "💱 Forex (Měny)": ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "USDCAD=X", "EURGBP=X"],
+    "🔥 Komodity & Indexy (CFD)": ["GC=F", "SI=F", "CL=F", "NG=F", "^GSPC", "^IXIC", "^GDAXI"],
+    "₿ Kryptoměny (CFD)": ["BTC-USD", "ETH-USD", "SOL-USD"]
+}
 
-if supabase_url and supabase_key:
-    try:
-        db_client = create_client(supabase_url, supabase_key)
-        st.session_state.db_connected = True
-    except Exception as db_err:
-        st.sidebar.error(f"⚠️ Nepodařilo se připojit k Supabase: {db_err}")
-
-# Automatické načtení z cloudu při startu aplikace
-if st.session_state.db_connected and len(st.session_state.journal) == 0:
-    try:
-        res = db_client.table("xtb_trades").select("*").execute()
-        if res.data:
-            st.session_state.journal = res.data
-    except Exception:
-        pass  
+# --- SWAPOVÁ DATABÁZE (Varování pro Forex) ---
+SWAP_WARNINGS = {
+    "USDJPY=X": {"status": "⚠️ Pozor na Short pozice", "note": "Držení Short pozice přes noc má vysoký záporný swap kvůli úrokovému diferenciálu."},
+    "EURUSD=X": {"status": "ℹ️ Nízké swapy", "note": "Swapy jsou relativně stabilní, vhodné pro swing na 1-3 dny."},
+    "GBPUSD=X": {"status": "⚠️ Střední swapy", "note": "Při držení Long pozice sleduj vyhlašování BOE."},
+    "EURGBP=X": {"status": "ℹ️ Nízké swapy", "note": "Vhodné pro trading v pásmu."}
+}
 
 # --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---
 @st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
-    df = pd.DataFrame()
-    
-    # 1. Twelve Data (Pouze pro Forex / Indexy přes API)
-    twelve_key = st.secrets.get("TWELVEDATA_API_KEY", None)
-    if df.empty and twelve_key and "/" in ticker_symbol:
-        try:
-            url = f"https://api.twelvedata.com/time_series?symbol={ticker_symbol}&interval=1day&outputsize=500&apikey={twelve_key}"
-            response = requests.get(url)
-            response.raise_for_status()
-            res = response.json()
-            if "values" in res:
-                df_td = pd.DataFrame(res["values"])
-                df_td['datetime'] = pd.to_datetime(df_td['datetime'])
-                df_td = df_td.set_index('datetime').astype(float)
-                df_td = df_td.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
-                df = df_td.sort_index()
-        except Exception as e:
-            st.sidebar.warning(f"Twelve Data API chyba pro {ticker_symbol}: {e}")
-            
-    # 2. Yahoo Finance (Hlavní zdroj pro Akcie a ETF + Záloha pro Forex)
-    if df.empty:
-        try:
-            yf_ticker = ticker_symbol
-            if "/" in ticker_symbol:
-                yf_ticker = ticker_symbol.replace("/", "") + "=X"
-            df = yf.Ticker(yf_ticker).history(period="2y")
-        except Exception as e:
-            st.sidebar.error(f"Yahoo Finance selhala: {e}")
-            return None
-        
-    if df is None or df.empty:
-        return None
-        
-    # --- VÝPOČET POKROČILÝCH INDIKÁTORŮ ---
     try:
+        yf_ticker = ticker_symbol
+        if "/" in ticker_symbol:
+            yf_ticker = ticker_symbol.replace("/", "") + "=X"
+            
+        df = yf.Ticker(yf_ticker).history(period="2y")
+        
+        if df is None or df.empty:
+            return None
+            
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
-            
-        if len(df) < 200:
-            st.sidebar.warning(f"Nedostatek dat ({len(df)} dní) pro výpočet SMA_200 u {ticker_symbol}.")
 
+        # Technické indikátory
+        df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
+        df['SMA_200'] = df['Close'].rolling(window=min(200, len(df))).mean()
+        
         df_weekly = df.resample('W').agg({'Close': 'last'})
         df_weekly['SMA_50_W'] = df_weekly['Close'].rolling(window=min(50, len(df_weekly))).mean()
         df['Weekly_SMA_50'] = df_weekly['SMA_50_W'].reindex(df.index, method='ffill')
-
-        df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
-        df['SMA_200'] = df['Close'].rolling(window=min(200, len(df))).mean()
         
         delta = df['Close'].diff()
         gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-        
         rs = np.where(loss == 0, np.nan, gain / loss)
         df['RSI'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
         
@@ -107,50 +75,25 @@ def get_market_data(ticker_symbol):
         low_close = np.abs(df['Low'] - df['Close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         df['ATR'] = np.max(ranges, axis=1).rolling(14).mean()
-    except Exception as calc_err:
-        st.sidebar.error(f"Chyba při výpočtu indikátorů: {calc_err}")
         
-    return df
-
-@st.cache_data(ttl=3600)
-def check_earnings(ticker_symbol):
-    api_key = st.secrets.get("FINNHUB_API_KEY", None)
-    if not api_key or "=" in ticker_symbol or "^" in ticker_symbol or "/" in ticker_symbol:
-        return False
-    try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        next_week = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
-        url = f"https://finnhub.io/api/v1/calendar/earnings?from={today}&to={next_week}&symbol={ticker_symbol}&token={api_key}"
-        res = requests.get(url).json()
-        if "earningsCalendar" in res and len(res["earningsCalendar"]) > 0:
-            return True
-    except Exception as e:
-        st.sidebar.warning(f"Nelze ověřit Earnings kalendář: {e}")
-    return False
+        return df
+    except Exception:
+        return None
 
 # --- GLOBÁLNÍ VYHLEDÁVÁNÍ ---
 st.divider()
 col_search, _ = st.columns([1, 2])
 with col_search:
-    raw_input = st.text_input("🔍 Hledaný instrument:", value="AAPL").upper().strip()
-    
-    if len(raw_input) == 6 and "/" not in raw_input:
-        forex_currencies = ["USD", "JPY", "EUR", "GBP", "CHF", "AUD", "CAD", "NZD"]
-        if raw_input[:3] in forex_currencies or raw_input[3:] in forex_currencies:
-            ticker_input = f"{raw_input[:3]}/{raw_input[3:]}"
-        else:
-            ticker_input = raw_input
-    else:
-        ticker_input = raw_input
-        
+    ticker_input = st.text_input("🔍 Rychlá analýza jednoho instrumentu (např. AAPL, KOFOL.PR, EURUSD=X):", value="AAPL").strip()
+
 st.write("") 
 
-tab_calc, tab_scanner, tab_news, tab_journal, tab_backtest, tab_forward = st.tabs([
-    "📊 Kalkulačka", "📡 Skener", "🤖 AI Zprávy", "📓 Deník", "⏪ Backtest", "🚀 Forward-Testing"
+tab_calc, tab_scanner, tab_journal, tab_backtest = st.tabs([
+    "📊 Kalkulačka & Řízení rizik", "📡 Multi-Asset Skener Trhu", "📓 Deník & Audit z XTB", "⏪ Backtest Stroj Času"
 ])
 
 # ==========================================
-# ZÁLOŽKA 1: ANALÝZA A KALKULAČKA
+# ZÁLOŽKA 1: KALKULAČKA A ŘÍZENÍ RIZIK
 # ==========================================
 with tab_calc:
     current_price = 0.0
@@ -159,232 +102,114 @@ with tab_calc:
     if ticker_input:
         df = get_market_data(ticker_input)
         if df is not None and not df.empty:
-            current_price = float(df['Close'].iloc[-1]) if not pd.isna(df['Close'].iloc[-1]) else 0.0
-            atr_val = df['ATR'].iloc[-1] if 'ATR' in df.columns else 1.0
-            atr = float(atr_val) if not pd.isna(atr_val) else 1.0
+            current_price = float(df['Close'].iloc[-1])
+            atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 1.0
+            st.success(f"✅ Aktuální tržní cena **{ticker_input}**: {current_price:.2f}")
             
-            if check_earnings(ticker_input):
-                st.error(f"⚠️ POZOR: {ticker_input} vyhlašuje do 14 dnů hospodářské výsledky! Hrozí vysoká volatilita a gapy.")
-
-            st.success(f"✅ Aktuální cena **{ticker_input}**: {current_price:.2f}")
-            
+            # Graf
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Cena'))
-            if 'SMA_50' in df.columns:
-                fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='SMA 50'))
-            if 'Weekly_SMA_50' in df.columns:
-                fig.add_trace(go.Scatter(x=df.index, y=df['Weekly_SMA_50'], line=dict(color='purple', width=3), name='Týdenní SMA 50 (MTF)'))
-            if 'BB_Up' in df.columns:
-                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Up'], line=dict(color='gray', width=1, dash='dot'), name='BB Horní'))
-                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Low'], line=dict(color='gray', width=1, dash='dot'), name='BB Dolní'))
-                
-            fig.update_layout(title=f'Cenový vývoj {ticker_input}', xaxis_rangeslider_visible=False, height=500)
+            if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='SMA 50'))
+            if 'BB_Low' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['BB_Low'], line=dict(color='gray', width=1, dash='dot'), name='BB Dolní'))
+            fig.update_layout(xaxis_rangeslider_visible=False, height=400)
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("⚠️ Data se nepodařilo načíst. Zkontroluj ticker nebo zadej cenu do kalkulačky ručně.")
 
-    st.divider()
-    st.subheader("🛡️ Výpočet Risku a Trailing Stopu")
-    
-    calc_type = st.radio("Vyber typ instrumentu pro výpočet:", ["📈 Akcie a ETF (Kusy)", "💱 CFD / Forex (Loty)"], horizontal=True)
+    st.subheader("🛡️ Pokročilý výpočet pozice s ochranou před swapy")
+    calc_type = st.radio("Typ instrumentu:", ["📈 Akcie a ETF", "💱 CFD / Forex / Komodity"], horizontal=True)
 
-    if calc_type == "📈 Akcie a ETF (Kusy)":
-        c1, c2 = st.columns(2)
-        with c1:
-            acc_bal = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0)
-            risk_pct = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1)
-        with c2:
-            entry = st.number_input("Vstupní cena (Entry):", value=current_price if current_price > 0 else 150.0, step=1.0)
-            sl = st.number_input("Stop Loss (SL):", value=(current_price - 2*atr) if current_price > 0 else 140.0, step=1.0)
-            tp = st.number_input("Take Profit (TP):", value=(current_price + 4*atr) if current_price > 0 else 170.0, step=1.0)
-
-        if st.button("Spočítat parametry (Akcie)", type="primary"):
-            if entry == sl:
-                st.error("Vstup a SL nesmí být stejné!")
-            else:
-                risk_amount = acc_bal * (risk_pct / 100)
-                risk_per_share = abs(entry - sl)
-                volume = risk_amount / risk_per_share if risk_per_share > 0 else 0
-                total_profit = volume * abs(tp - entry)
-                rrr = abs(tp - entry) / risk_per_share if risk_per_share > 0 else 0
-                
-                r1, r2, r3, r4 = st.columns(4)
-                r1.metric("Max. Ztráta", f"{risk_amount:.2f}")
-                r2.metric("Potenciální Zisk", f"{total_profit:.2f}")
-                r3.metric("Velikost pozice (Kusy)", f"{volume:.2f}")
-                r4.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}")
-                
-                st.info(f"🛡️ **Řízení pozice:** Jakmile cena dosáhne **{(entry + 1.5*atr):.2f}**, posuň Stop Loss na Break-Even (vstupní cenu {entry:.2f}).")
-                
-                trade_record = {
-                    "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "Instrument": ticker_input, "Typ": "Akcie",
-                    "Vstup": entry, "SL": sl, "TP": tp, "Objem": round(volume, 2),
-                    "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}",
-                    "Status": "Otevřeno"
-                }
-                st.session_state.journal.append(trade_record)
-                st.toast('Obchod uložen do lokálního deníku!', icon='📓')
-
+    if ticker_input in SWAP_WARNINGS:
+        st.warning(f"{SWAP_WARNINGS[ticker_input]['status']}: {SWAP_WARNINGS[ticker_input]['note']}")
+        st.info("💡 Pro tento pár byla strategie automaticky upravena na rychlý odraz (RRR 1:1, držení max 48 hodin).")
+        default_tp_mult = 2.0
     else:
-        c3, c4 = st.columns(2)
-        with c3:
-            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0, key="bal_cfd")
-            risk_pct_cfd = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1, key="risk_cfd")
-        with c4:
-            entry_cfd = st.number_input("Vstupní cena (Entry):", min_value=0.00001, value=current_price if current_price > 0 else 1.1000, format="%.5f", key="entry_cfd")
-            sl_cfd = st.number_input("Cena Stop Loss (SL):", min_value=0.00001, value=(current_price - 2*atr) if current_price > 0 else 1.0950, format="%.5f", key="sl_cfd")
-            tp_cfd = st.number_input("Take Profit (TP):", min_value=0.00001, value=(current_price + 4*atr) if current_price > 0 else 1.1100, format="%.5f", key="tp_cfd")
-            point_value = st.number_input("Hodnota 1 bodu při objemu 1 Lot:", min_value=0.01, value=10.0, step=1.0)
+        default_tp_mult = 4.0
 
-        if st.button("Spočítat pro CFD/Forex", type="primary"):
-            if entry_cfd == sl_cfd:
-                st.error("Vstupní cena a Stop Loss nesmí být stejné!")
-            else:
-                risk_amount = acc_bal_cfd * (risk_pct_cfd / 100)
-                points_at_risk = abs(entry_cfd - sl_cfd)
-                points_profit = abs(tp_cfd - entry_cfd)
-                
-                risk_per_one_lot = points_at_risk * point_value
-                profit_per_one_lot = points_profit * point_value
-                
-                lot_size = risk_amount / risk_per_one_lot if risk_per_one_lot > 0 else 0
-                total_profit = lot_size * profit_per_one_lot
-                rrr = points_profit / points_at_risk if points_at_risk > 0 else 0
-                
-                res5, res6, res7, res8 = st.columns(4)
-                res5.metric("Max. Ztráta", f"{risk_amount:.2f}")
-                res6.metric("Potenciální Zisk", f"{total_profit:.2f}")
-                res7.metric("Velikost pozice (Loty)", f"{lot_size:.3f}")
-                res8.metric("Risk:Reward (RRR)", f"1 : {rrr:.2f}")
-                
-                st.info(f"🛡️ **Řízení pozice:** Jakmile cena dosáhne **{(entry_cfd + 1.5*atr):.5f}**, posuň Stop Loss na Break-Even (vstupní cenu {entry_cfd:.5f}).")
-                
-                trade_record = {
-                    "Datum": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "Instrument": ticker_input, "Typ": "CFD/Forex",
-                    "Vstup": entry_cfd, "SL": sl_cfd, "TP": tp_cfd, "Objem": round(lot_size, 2),
-                    "Risk": round(risk_amount, 2), "Zisk": round(total_profit, 2), "RRR": f"1:{rrr:.2f}",
-                    "Status": "Otevřeno"
-                }
-                st.session_state.journal.append(trade_record)
-                st.toast('Obchod uložen do lokálního deníku!', icon='📓')
+    c1, c2 = st.columns(2)
+    with c1:
+        acc_bal = st.number_input("Zůstatek na účtu (CZK):", min_value=100.0, value=33000.0, step=1000.0)
+        risk_pct = st.number_input("Risk na jeden obchod (%):", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
+    with c2:
+        entry = st.number_input("Vstupní cena (Entry):", value=current_price if current_price > 0 else 100.0)
+        sl_mult = st.slider("Stop Loss (násobek ATR):", 1.0, 4.0, 2.0)
+        tp_mult = st.slider("Take Profit (násobek ATR):", 1.0, 8.0, default_tp_mult)
 
-# ==========================================
-# ZÁLOŽKA 5: BACKTESTING
-# ==========================================
-with tab_backtest:
-    st.header("⏪ Stroj času: Otestuj svou strategii na historii")
-    col_b1, col_b2 = st.columns(2)
-    with col_b1:
-        bt_rsi = st.slider("Nakupovat, když RSI klesne pod:", 10, 50, 30)
-        bt_mtf = st.checkbox("Povolit nákup POUZE pokud je týdenní trend rostoucí (MTF Filtr)", value=True)
-    with col_b2:
-        bt_sl_atr = st.slider("Stop Loss (násobek ATR):", 1.0, 5.0, 2.0)
-        bt_tp_atr = st.slider("Take Profit (násobek ATR):", 1.0, 10.0, 4.0)
+    calculated_sl = entry - (sl_mult * atr)
+    calculated_tp = entry + (tp_mult * atr)
+    
+    st.write(f"📐 **Navržené úrovně:** Stop Loss: **{calculated_sl:.4f}** | Take Profit: **{calculated_tp:.4f}**")
+
+    if st.button("🚀 Spočítat a uložit parametry pozice", type="primary"):
+        risk_amount = acc_bal * (risk_pct / 100)
+        risk_per_unit = abs(entry - calculated_sl)
         
-    if st.button("🚀 Spustit Backtest", type="primary"):
-        if ticker_input:
-            df_bt = get_market_data(ticker_input)
-            if df_bt is not None and not df_bt.empty:
-                with st.spinner("Simuluji obchody..."):
-                    capital = 10000.0
-                    risk_pct = 0.015
-                    equity_curve = []
-                    trades = []
-                    in_trade = False
-                    entry_price = 0; sl = 0; tp = 0; volume = 0
-                    
-                    required_cols = ['ATR', 'RSI', 'BB_Low']
-                    if bt_mtf:
-                        required_cols.append('Weekly_SMA_50')
-                    df_bt_clean = df_bt.dropna(subset=required_cols)
-                    
-                    for date, row in df_bt_clean.iterrows():
-                        if not in_trade:
-                            trend_ok = (row['Close'] > row['Weekly_SMA_50']) if bt_mtf else True
-                            
-                            if row['RSI'] < bt_rsi and row['Close'] < row['BB_Low'] and trend_ok:
-                                entry_price = row['Close']
-                                atr_current = row['ATR'] if row['ATR'] > 0 else 0.01
-                                
-                                sl = entry_price - (bt_sl_atr * atr_current)
-                                tp = entry_price + (bt_tp_atr * atr_current)
-                                risk_amount = capital * risk_pct
-                                
-                                risk_per_unit = (entry_price - sl)
-                                volume = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
-                                if volume > 0:
-                                    in_trade = True
-                        else:
-                            if row['Low'] <= sl:
-                                capital -= risk_amount
-                                trades.append({'Výsledek': 'Ztráta', 'Zisk/Ztráta': -risk_amount})
-                                in_trade = False
-                            elif row['High'] >= tp:
-                                profit = volume * (tp - entry_price)
-                                capital += profit
-                                trades.append({'Výsledek': 'Zisk', 'Zisk/Ztráta': profit})
-                                in_trade = False
-                                
-                        equity_curve.append({'Datum': date, 'Kapitál': capital})
-                    
-                    st.subheader("📊 Výsledky simulace (Počáteční kapitál: 10 000)")
-                    if len(trades) > 0:
-                        df_trades = pd.DataFrame(trades)
-                        win_rate = (len(df_trades[df_trades['Výsledek'] == 'Zisk']) / len(trades)) * 100
-                        total_return = ((capital - 10000) / 10000) * 100
-                        
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("Počet obchodů", len(trades))
-                        m2.metric("Win Rate (Úspěšnost)", f"{win_rate:.1f} %")
-                        m3.metric("Konečný kapitál", f"{capital:.2f}", f"{total_return:.1f} %")
-                        
-                        df_eq = pd.DataFrame(equity_curve)
-                        fig_eq = go.Figure()
-                        fig_eq.add_trace(go.Scatter(x=df_eq['Datum'], y=df_eq['Kapitál'], fill='tozeroy', line=dict(color='#00cc96')))
-                        fig_eq.update_layout(title="Křivka růstu kapitálu (Equity Curve)", height=400)
-                        st.plotly_chart(fig_eq, use_container_width=True)
-                    else:
-                        st.warning("Strategie nevygenerovala za poslední 2 roky žádný obchod.")
+        if calc_type == "📈 Akcie a ETF":
+            volume = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
+            total_profit = volume * abs(calculated_tp - entry)
+            st.metric("Objem k nákupu (Kusy)", f"{volume:.2f} ks")
+        else:
+            volume = risk_amount / (risk_per_unit * 10) if risk_per_unit > 0 else 0
+            total_profit = volume * abs(calculated_tp - entry) * 10
+            st.metric("Velikost pozice (Loty)", f"{volume:.3f} Lotu")
+            
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Max. povolená ztráta", f"{risk_amount:.2f} CZK")
+        r2.metric("Potenciální zisk", f"{total_profit:.2f} CZK")
+        r3.metric("Risk:Reward Poměr", f"1 : {(tp_mult/sl_mult):.2f}")
 
 # ==========================================
-# ZÁLOŽKA 6: FORWARD-TESTING
+# ZÁLOŽKA 2: MULTI-ASSET SKENER TRHU
 # ==========================================
-with tab_forward:
-    st.header("🚀 Papírové portfolio Bota (Forward-Testing)")
-    st.markdown("Zde vidíš všechny signály, které tvůj bot na GitHubu vygeneroval a uložil do databáze.")
+with tab_scanner:
+    st.header("📡 Globální Skener XTB Instrumentů")
+    st.markdown("Vyber si kategorii aktiv. Asistent projede celý trh a najde tituly splňující tvou strategii.")
     
-    if st.session_state.db_connected:
-        if st.button("🔄 Načíst signály od Bota"):
-            try:
-                res = db_client.table("bot_signals").select("*").order("Datum", desc=True).execute()
-                if res.data:
-                    df_signals = pd.DataFrame(res.data)
-                    cols_to_show = [c for c in df_signals.columns if c not in ['id', 'created_at']]
-                    st.dataframe(df_signals[cols_to_show], use_container_width=True)
-                else:
-                    st.info("Bot zatím nevygeneroval žádné signály.")
-            except Exception as e:
-                st.error(f"Chyba při načítání signálů: {e}")
-    else:
-        st.warning("Databáze není připojena.")
+    selected_category = st.selectbox("Vyber segment trhu ke skenování:", list(TICKER_DATABASE.keys()))
+    tickers_to_scan = TICKER_DATABASE[selected_category]
+    
+    if st.button(f"🔍 Spustit sken pro {selected_category}"):
+        scan_results = []
+        progress_bar = st.progress(0)
+        
+        for idx, ticker in enumerate(tickers_to_scan):
+            df_scan = get_market_data(ticker)
+            if df_scan is not None and not df_scan.empty:
+                last_row = df_scan.iloc[-1]
+                rsi_val = last_row['RSI'] if 'RSI' in df_scan.columns else 50
+                close_val = last_row['Close']
+                bb_low_val = last_row['BB_Low'] if 'BB_Low' in df_scan.columns else 0
+                
+                status = "⚪ Neutrální"
+                if rsi_val < 30 and close_val < bb_low_val:
+                    status = "🔥 SILNÝ NÁKUP (Přeprodáno + BB Průraz)"
+                elif rsi_val < 35:
+                    status = "🟡 Sledovat (Blízko nákupu)"
+                elif rsi_val > 70:
+                    status = "🔴 Překoupeno (Nekupovat)"
+                    
+                scan_results.append({
+                    "Ticker": ticker,
+                    "Aktuální Cena": round(close_val, 2),
+                    "RSI (14)": round(rsi_val, 1),
+                    "Bollinger Low": round(bb_low_val, 2),
+                    "Doporučení bota": status
+                })
+            progress_bar.progress((idx + 1) / len(tickers_to_scan))
+            
+        df_results = pd.DataFrame(scan_results)
+        st.dataframe(df_results, use_container_width=True)
 
 # ==========================================
-# ZÁLOŽKA 4: AUDIT OBCHODŮ (REÁLNÝ XTB IMPORT)
+# ZÁLOŽKA 3: DENÍK A REÁLNÝ AUDIT Z XTB
 # ==========================================
 with tab_journal:
-    st.header("📓 Můj obchodní deník a Audit Úspěšnosti")
-    st.markdown("Nahraj svůj kompletní `.xlsx` report stažený z XTB profilu (Investor Office).")
+    st.header("📓 Profesionální Audit tvého XTB Účtu")
+    st.markdown("Nahraj svůj kompletní `.xlsx` report stažený z XTB platformy (Záložka Historie -> Export).")
     
-    uploaded_file = st.file_uploader("Vyber XTB XLSX report účtu", type=["xlsx"])
+    uploaded_file = st.file_uploader("Nahraj XTB Excel soubor (.xlsx)", type=["xlsx"])
     
     if uploaded_file is not None:
         try:
-            # 1. Čtení uzavřených pozic (List 'CLOSED POSITION HISTORY')
-            # XTB exporty mají hlavičku na cca 11. řádku, musíme ji dynamicky najít
             df_raw = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY')
-            
             header_row_idx = None
             for idx in range(len(df_raw)):
                 row_vals = df_raw.iloc[idx].astype(str).tolist()
@@ -393,45 +218,30 @@ with tab_journal:
                     break
                     
             if header_row_idx is not None:
-                # Načteme list znovu od správného řádku
-                uploaded_file.seek(0)
                 df_closed = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY', skiprows=header_row_idx + 1)
                 df_closed.columns = df_closed.columns.str.strip()
                 df_closed = df_closed.dropna(subset=['Position', 'Gross P/L'])
-                
-                # Vyčištění číselných hodnot
                 df_closed['Gross P/L'] = pd.to_numeric(df_closed['Gross P/L'], errors='coerce').fillna(0)
                 
-                st.success(f"✅ Úspěšně zpracováno {len(df_closed)} uzavřených tradingových operací.")
-                
-                # --- STATISTICKÉ METRIKY AUDITU ---
+                # Výpočty
                 ziskove = df_closed[df_closed['Gross P/L'] > 0]
                 ztratove = df_closed[df_closed['Gross P/L'] < 0]
                 
-                total_trades = len(df_closed)
-                win_count = len(ziskove)
-                loss_count = len(ztratove)
-                
-                win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
-                avg_win = ziskove['Gross P/L'].mean() if win_count > 0 else 0
-                avg_loss = abs(ztratove['Gross P/L'].mean()) if loss_count > 0 else 0
+                win_rate = (len(ziskove) / len(df_closed)) * 100 if len(df_closed) > 0 else 0
+                avg_win = ziskove['Gross P/L'].mean() if len(ziskove) > 0 else 0
+                avg_loss = abs(ztratove['Gross P/L'].mean()) if len(ztratove) > 0 else 0
                 real_rrr = avg_win / avg_loss if avg_loss > 0 else 0
+                profit_factor = ziskove['Gross P/L'].sum() / abs(ztratove['Gross P/L'].sum()) if ztratove['Gross P/L'].sum() != 0 else 1.0
                 
-                total_win_sum = ziskove['Gross P/L'].sum()
-                total_loss_sum = abs(ztratove['Gross P/L'].sum())
-                profit_factor = total_win_sum / total_loss_sum if total_loss_sum > 0 else (total_win_sum if total_win_sum > 0 else 1.0)
-                net_pl = df_closed['Gross P/L'].sum()
+                # Karty
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Uzavřené obchody", len(df_closed))
+                m2.metric("Win Rate", f"{win_rate:.1f} %")
+                m3.metric("Profit Factor", f"{profit_factor:.2f}")
+                m4.metric("Čistý výsledek", f"{df_closed['Gross P/L'].sum():.2f} CZK")
                 
-                # Zobrazení karet s výsledky
-                aud1, aud2, aud3, aud4 = st.columns(4)
-                aud1.metric("Počet obchodů", total_trades)
-                aud2.metric("Win Rate", f"{win_rate:.1f} %")
-                aud3.metric("Profit Factor", f"{profit_factor:.2f}")
-                aud4.metric("Čistý P/L (Zisk)", f"{net_pl:.2f} CZK")
+                st.info(f"📊 **Průměrný zisk:** {avg_win:.2f} CZK | **Průměrná ztráta:** -{avg_loss:.2f} CZK | **Reálné RRR:** 1 : {real_rrr:.2f}")
                 
-                st.info(f"📊 **Průměrný zisk:** {avg_win:.2f} CZK | **Průměrná ztráta:** -{avg_loss:.2f} CZK | **Výsledný poměr rizik (Reálné RRR):** 1 : {real_rrr:.2f}")
-                
-                # Rychlé slovní vyhodnocení
                 if profit_factor > 1.4:
                     st.success("🎯 **Hedge Fund Zhodnocení:** Strategie vykazuje silnou ziskovost. Risk management funguje správně.")
                 elif profit_factor >= 1.0:
@@ -450,42 +260,43 @@ with tab_journal:
                 fig_xtb.update_layout(title="Chronologický vývoj uzavřených výsledků", height=380, xaxis_title="Čas uzavření", yaxis_title="CZK")
                 st.plotly_chart(fig_xtb, use_container_width=True)
                 
-                # Detailní tabulka
-                st.subheader("📋 Přehled uzavřených pozic")
                 st.dataframe(df_closed[['Position', 'Symbol', 'Type', 'Volume', 'Open price', 'Close price', 'Gross P/L', 'Comment']], use_container_width=True)
-                
             else:
                 st.error("V souboru nebyla nalezena tabulka s historií pozic.")
         except Exception as e:
-            st.error(f"Nepodařilo se načíst XLSX data. Zkontroluj formát reportu. Chyba: {e}")
-            
-    st.divider()
-    st.subheader("☁️ Manuální / Cloudový Deník (Supabase)")
-    if st.session_state.db_connected:
-        col_db1, col_db2 = st.columns(2)
-        with col_db1:
-            if st.button("☁️ Odeslat nové obchody do cloudu", type="primary"):
-                try:
-                    local_trades = [t for t in st.session_state.journal if 'id' not in t]
-                    if local_trades:
-                        for record in local_trades:
-                            db_client.table("xtb_trades").insert(record).execute()
-                        st.success("Uloženo do cloudu!")
-                        res = db_client.table("xtb_trades").select("*").execute()
-                        st.session_state.journal = res.data if res.data else []
-                except Exception as e:
-                    st.error(f"Chyba DB: {e}")
-        with col_db2:
-            if st.button("📥 Vynutit načtení z cloudu"):
-                try:
-                    res = db_client.table("xtb_trades").select("*").execute()
-                    if res.data:
-                        st.session_state.journal = res.data
-                        st.success("Načteno.")
-                except Exception as e:
-                    st.error(f"Chyba DB: {e}")
+            st.error(f"Chyba při zpracování souboru: {e}")
 
-with tab_scanner:
-    st.info("Skener je nyní plně automatizován přes tvého GitHub Bota.")
-with tab_news:
-    st.info("AI Zprávy fungují přes globální vyhledávání nahoře.")
+# ==========================================
+# ZÁLOŽKA 4: BACKTEST STROJ ČASU
+# ==========================================
+with tab_backtest:
+    st.header("⏪ Otestuj strategii na historii")
+    bt_ticker = st.text_input("Zadej ticker pro backtest:", value="USDJPY=X")
+    
+    if st.button("🚀 Spustit historickou simulaci"):
+        df_bt = get_market_data(bt_ticker)
+        if df_bt is not None and not df_bt.empty:
+            capital = 10000.0
+            trades = []
+            in_trade = False
+            
+            df_bt = df_bt.dropna(subset=['ATR', 'RSI', 'BB_Low'])
+            
+            for date, row in df_bt.iterrows():
+                if not in_trade:
+                    if row['RSI'] < 30 and row['Close'] < row['BB_Low']:
+                        entry_p = row['Close']
+                        sl_p = entry_p - (2 * row['ATR'])
+                        tp_p = entry_p + (2 * row['ATR'])  # RRR 1:1 pro rychlé odrazy
+                        in_trade = True
+                else:
+                    if row['Low'] <= sl_p:
+                        capital -= 150  
+                        trades.append(-150)
+                        in_trade = False
+                    elif row['High'] >= tp_p:
+                        capital += 150
+                        trades.append(150)
+                        in_trade = False
+                        
+            st.success(f"Simulace dokončena. Konečný virtuální kapitál: {capital:.2f} USD (Počet obchodů: {len(trades)})")
