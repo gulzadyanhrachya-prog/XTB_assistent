@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
+import plotly.express as px
 from datetime import datetime, timedelta
 
 # --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
@@ -21,7 +21,7 @@ TICKER_DATABASE = {
     "🇵🇱 Polsko (GPW)": ["PKO.WA", "PKN.WA", "ALE.WA", "KGH.WA", "PZU.WA", "CDR.WA", "DNP.WA"],
     "🇪🇺 Evropa Mainstream": ["BMW.DE", "SAP.DE", "SIE.DE", "AIR.PA", "MC.PA", "ASML.AS", "VOW3.DE"],
     "🇺🇸 US Akcie (Výběr)": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "WMT", "DIS", "XOM", "KO"],
-    "🌍 Globální ETF": ["SPY", "QQQ", "IWM", "EEM", "VGK", "IAU", "VNQ"],
+    "🌍 Globální ETF": ["SPY", QQQ, "IWM", "EEM", "VGK", "IAU", "VNQ"],
     "💱 Forex (Měny)": ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "USDCAD=X", "EURGBP=X"],
     "🔥 Komodity & Indexy (CFD)": ["GC=F", "SI=F", "CL=F", "NG=F", "^GSPC", "^IXIC", "^GDAXI"],
     "₿ Kryptoměny (CFD)": ["BTC-USD", "ETH-USD", "SOL-USD"]
@@ -35,11 +35,11 @@ SWAP_WARNINGS = {
     "EURGBP=X": {"status": "ℹ️ Nízké swapy", "note": "Vhodné pro trading v pásmu."}
 }
 
-# --- POMOCNÁ FUNKCE PRO VÝPOČET ADX (Směrový index pro trend) ---
+# --- VÝPOČET ADX ---
 def calculate_adx(df, period=14):
     df = df.copy()
     df['plus_DM'] = df['High'].diff()
-    df['minus_DM'] = df['Low'].diff().shift(-1) # Hledání low posunu
+    df['minus_DM'] = df['Low'].diff().shift(-1)
     df['plus_DM'] = np.where((df['plus_DM'] > df['minus_DM']) & (df['plus_DM'] > 0), df['plus_DM'], 0)
     df['minus_DM'] = np.where((df['minus_DM'] > df['plus_DM']) & (df['minus_DM'] > 0), df['minus_DM'], 0)
     
@@ -56,23 +56,17 @@ def calculate_adx(df, period=14):
     df['ADX'] = df['DX'].rolling(window=period).mean()
     return df['ADX']
 
-# --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---
+# --- STAŽENÍ DAT ---
 @st.cache_data(ttl=300)
 def get_market_data(ticker_symbol):
     try:
         yf_ticker = ticker_symbol
         if "/" in ticker_symbol:
             yf_ticker = ticker_symbol.replace("/", "") + "=X"
-            
         df = yf.Ticker(yf_ticker).history(period="2y")
-        
-        if df is None or df.empty:
-            return None
-            
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
+        if df is None or df.empty: return None
+        if df.index.tz is not None: df.index = df.index.tz_localize(None)
 
-        # Technické indikátory
         df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
         df['SMA_200'] = df['Close'].rolling(window=min(200, len(df))).mean()
         
@@ -96,10 +90,7 @@ def get_market_data(ticker_symbol):
         low_close = np.abs(df['Low'] - df['Close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         df['ATR'] = np.max(ranges, axis=1).rolling(14).mean()
-        
-        # Trendový ADX filtr
         df['ADX'] = calculate_adx(df)
-        
         return df
     except Exception:
         return None
@@ -111,46 +102,31 @@ with col_search:
     ticker_input = st.text_input("🔍 Rychlá analýza jednoho instrumentu (např. AAPL, KOFOL.PR, USDJPY=X):", value="USDJPY=X").strip()
 
 st.write("") 
-
 tab_calc, tab_scanner, tab_journal, tab_backtest = st.tabs([
     "📊 Kalkulačka, Swapy & Break-Even", "📡 Multi-Asset Skener (Adaptivní)", "📓 Deník & Excel Audit z XTB", "⏪ Backtest Stroj Času"
 ])
 
 # ==========================================
-# ZÁLOŽKA 1: KALKULAČKA, SWAPY A BREAK-EVEN
+# ZÁLOŽKA 1: KALKULAČKA A GRAFICKÝ BE
 # ==========================================
 with tab_calc:
-    current_price = 0.0
-    atr = 1.0 
-    
+    current_price, atr = 0.0, 1.0
     if ticker_input:
         df = get_market_data(ticker_input)
         if df is not None and not df.empty:
             current_price = float(df['Close'].iloc[-1])
             atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 1.0
             st.success(f"✅ Aktuální tržní cena **{ticker_input}**: {current_price:.4f}")
-            
-            # Graf
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Cena'))
-            if 'SMA_50' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], line=dict(color='blue', width=1), name='SMA 50'))
-            if 'BB_Low' in df.columns: fig.add_trace(go.Scatter(x=df.index, y=df['BB_Low'], line=dict(color='gray', width=1, dash='dot'), name='BB Dolní'))
-            fig.update_layout(xaxis_rangeslider_visible=False, height=400)
-            st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("🛡️ Pokročilý výpočet pozice s ochranou před swapy a Break-Even triggerem")
     calc_type = st.radio("Typ instrumentu:", ["📈 Akcie a ETF", "💱 CFD / Forex / Komodity"], horizontal=True)
 
-    # Detekce swapového rizika
     if ticker_input in SWAP_WARNINGS or (ticker_input.replace("/", "") + "=X") in SWAP_WARNINGS:
         tk_key = ticker_input if ticker_input in SWAP_WARNINGS else ticker_input.replace("/", "") + "=X"
         st.warning(f"{SWAP_WARNINGS[tk_key]['status']}: {SWAP_WARNINGS[tk_key]['note']}")
-        st.info("💡 Pro tento pár byla strategie automaticky upravena na rychlý odraz (RRR 1:1, držení max 48 hodin).")
         default_tp_mult = 2.0
-        default_sl_mult = 2.0
     else:
         default_tp_mult = 4.0
-        default_sl_mult = 2.0
 
     c1, c2 = st.columns(2)
     with c1:
@@ -158,50 +134,47 @@ with tab_calc:
         risk_pct = st.number_input("Risk na jeden obchod (%):", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
     with c2:
         entry = st.number_input("Vstupní cena (Entry):", value=current_price if current_price > 0 else 100.0, format="%.4f")
-        sl_mult = st.slider("Stop Loss (násobek ATR):", 1.0, 4.0, default_sl_mult)
+        sl_mult = st.slider("Stop Loss (násobek ATR):", 1.0, 4.0, 2.0)
         tp_mult = st.slider("Take Profit (násobek ATR):", 1.0, 8.0, default_tp_mult)
 
     calculated_sl = entry - (sl_mult * atr)
     calculated_tp = entry + (tp_mult * atr)
-    be_trigger = entry + (1.0 * atr) # Break-even trigger při +1 ATR
+    be_trigger = entry + (1.0 * atr)
     
-    st.write(f"📐 **Navržené úrovně:** Stop Loss: **{calculated_sl:.4f}** | Take Profit: **{calculated_tp:.4f}**")
+    if df is not None and not df.empty:
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(x=df.index[-60:], open=df['Open'][-60:], high=df['High'][-60:], low=df['Low'][-60:], close=df['Close'][-60:], name='Cena'))
+        fig.add_hline(y=entry, line_color="blue", line_dash="dash", annotation_text="ENTRY")
+        fig.add_hline(y=calculated_sl, line_color="red", line_dash="dash", annotation_text="STOP LOSS")
+        fig.add_hline(y=calculated_tp, line_color="green", line_dash="dash", annotation_text="TAKE PROFIT")
+        fig.add_hline(y=be_trigger, line_color="orange", line_dash="dot", annotation_text="POSUN NA BE ZDE")
+        fig.update_layout(xaxis_rangeslider_visible=False, height=400, title="Grafické znázornění tvého risku")
+        st.plotly_chart(fig, use_container_width=True)
 
     if st.button("🚀 Spočítat parametry pozice", type="primary"):
         risk_amount = acc_bal * (risk_pct / 100)
         risk_per_unit = abs(entry - calculated_sl)
+        volume = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
+        total_profit = volume * abs(calculated_tp - entry) if calc_type == "📈 Akcie a ETF" else (risk_amount / (risk_per_unit * 10)) * abs(calculated_tp - entry) * 10
         
-        if calc_type == "📈 Akcie a ETF":
-            volume = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
-            total_profit = volume * abs(calculated_tp - entry)
-            st.metric("Objem k nákupu (Kusy)", f"{volume:.2f} ks")
-        else:
-            volume = risk_amount / (risk_per_unit * 10) if risk_per_unit > 0 else 0
-            total_profit = volume * abs(calculated_tp - entry) * 10
-            st.metric("Velikost pozice (Loty)", f"{volume:.3f} Lotu")
-            
         r1, r2, r3 = st.columns(3)
         r1.metric("Max. povolená ztráta", f"{risk_amount:.2f} CZK")
         r2.metric("Potenciální zisk", f"{total_profit:.2f} CZK")
         r3.metric("Risk:Reward Poměr", f"1 : {(tp_mult/sl_mult):.2f}")
-        
-        st.info(f"🛡️ **Pravidlo Break-Even:** Jakmile cena dosáhne **{be_trigger:.4f}** (+1 ATR), okamžitě posuň Stop Loss na hodnotu tvého vstupu ({entry:.4f}). Tím odstraníš riziko ztráty.")
+        st.info(f"🛡️ **Pravidlo Break-Even:** Jakmile cena dosáhne **{be_trigger:.4f}**, posuň Stop Loss na hodnotu tvého vstupu ({entry:.4f}).")
 
 # ==========================================
-# ZÁLOŽKA 2: MULTI-ASSET ADAPTIVNÍ SKENER
+# ZÁLOŽKA 2: ADAPTIVNÍ SKENER S HEATMAPOU
 # ==========================================
 with tab_scanner:
     st.header("📡 Adaptivní Skener XTB Instrumentů (Hedge Fund Edice)")
-    st.markdown("Skener se automaticky adaptuje na volatilitu a trend pomocí indikátoru ADX a ATR.")
-    
     selected_category = st.selectbox("Vyber segment trhu ke skenování:", list(TICKER_DATABASE.keys()))
-    tickers_to_scan = TICKER_DATABASE[selected_category]
     
     if st.button(f"🔍 Spustit adaptivní sken pro {selected_category}"):
         scan_results = []
         progress_bar = st.progress(0)
         
-        for idx, ticker in enumerate(tickers_to_scan):
+        for idx, ticker in enumerate(TICKER_DATABASE[selected_category]):
             df_scan = get_market_data(ticker)
             if df_scan is not None and not df_scan.empty:
                 last_row = df_scan.iloc[-1]
@@ -209,147 +182,88 @@ with tab_scanner:
                 close_val = last_row['Close']
                 bb_low_val = last_row['BB_Low'] if 'BB_Low' in df_scan.columns else 0
                 adx_val = last_row['ADX'] if 'ADX' in df_scan.columns else 20
-                atr_val = last_row['ATR'] if 'ATR' in df_scan.columns else 1.0
-                atr_mean = df_scan['ATR'].mean()
                 
-                # --- FLEXIBILNÍ LOGIKA VSTUPU ---
-                # 1. Adaptivní RSI podle volatility (ATR)
-                rsi_threshold = 30
-                if atr_val > (atr_mean * 1.3):  # Pokud je na trhu extrémní panika a vysoké ATR
-                    rsi_threshold = 20          # Zpřísníme vstup, nekupujeme padající nůž příliš brzy
+                rsi_threshold = 20 if last_row['ATR'] > (df_scan['ATR'].mean() * 1.3) else 30
+                is_buy = (rsi_val < rsi_threshold) and (close_val < bb_low_val) if adx_val <= 25 else (rsi_val < (rsi_threshold - 5)) and (close_val < (bb_low_val * 0.99))
                 
-                # 2. Market Regime Filter (ADX)
-                if adx_val > 25:
-                    regime = "📈 Silný Trend (Pozor na odrazy!)"
-                    # V silném trendu vyžadujeme ještě hlubší propad
-                    is_buy = (rsi_val < (rsi_threshold - 5)) and (close_val < (bb_low_val * 0.99))
-                else:
-                    regime = "⚖️ Pásmo / Chop (Odrazy fungují skvěle)"
-                    is_buy = (rsi_val < rsi_threshold) and (close_val < bb_low_val)
-                
-                status = "⚪ Neutrální"
-                if is_buy:
-                    status = "🔥 ADAPTIVNÍ NÁKUP (Podmínky splněny)"
-                elif rsi_val < (rsi_threshold + 5):
-                    status = "61 Blízko nákupní zóny"
-                elif rsi_val > 70:
-                    status = "🔴 Překoupeno (Nekupovat)"
-                    
-                scan_results.append({
-                    "Ticker": ticker,
-                    "Cena": round(close_val, 2),
-                    "RSI (14)": round(rsi_val, 1),
-                    "ADX (Trend)": round(adx_val, 1) if not pd.isna(adx_val) else "N/A",
-                    "Tržní režim": regime,
-                    "Rozhodnutí asistenta": status
-                })
-            progress_bar.progress((idx + 1) / len(tickers_to_scan))
+                status = "🟢 ADAPTIVNÍ NÁKUP" if is_buy else ("🔴 Překoupeno" if rsi_val > 70 else "⚪ Neutrální")
+                scan_results.append({"Ticker": ticker, "Cena": round(close_val, 2), "RSI (14)": round(rsi_val, 1), "ADX (Trend)": round(adx_val, 1), "Rozhodnutí bota": status})
+            progress_bar.progress((idx + 1) / len(TICKER_DATABASE[selected_category]))
             
-        df_results = pd.DataFrame(scan_results)
-        st.dataframe(df_results, use_container_width=True)
+        df_res = pd.DataFrame(scan_results)
+        
+        # Vizuální heatmapové podbarvení tabulky
+        def style_results(val):
+            if val == "🟢 ADAPTIVNÍ NÁKUP": return 'background-color: #d4edda; color: #155724; font-weight: bold;'
+            if val == "🔴 Překoupeno": return 'background-color: #f8d7da; color: #721c24;'
+            return ''
+        
+        st.dataframe(df_res.style.applymap(style_results, subset=['Rozhodnutí bota']), use_container_width=True)
 
 # ==========================================
-# ZÁLOŽKA 3: DENÍK A REÁLNÝ AUDIT Z EXCELU XTB
+# ZÁLOŽKA 3: DENÍK & VISUÁLNÍ AUDIT Z XTB
 # ==========================================
 with tab_journal:
-    st.header("📓 Profesionální Audit tvého XTB Účtu")
-    st.markdown("Nahraj svůj kompletní `.xlsx` report stažený z XTB platformy (Záložka Historie -> Export).")
-    
+    st.header("📓 Profesionální Vizuální Audit tvého XTB Účtu")
     uploaded_file = st.file_uploader("Nahraj XTB Excel soubor (.xlsx)", type=["xlsx"])
     
     if uploaded_file is not None:
         try:
             df_raw = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY')
-            header_row_idx = None
-            for idx in range(len(df_raw)):
-                row_vals = df_raw.iloc[idx].astype(str).tolist()
-                if any('Position' in val or 'Symbol' in val for val in row_vals):
-                    header_row_idx = idx
-                    break
-                    
-            if header_row_idx is not None:
-                df_closed = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY', skiprows=header_row_idx + 1)
-                df_closed.columns = df_closed.columns.str.strip()
-                df_closed = df_closed.dropna(subset=['Position', 'Gross P/L'])
-                df_closed['Gross P/L'] = pd.to_numeric(df_closed['Gross P/L'], errors='coerce').fillna(0)
+            header_row_idx = next(i for i, row in enumerate(df_raw.values) if any('Position' in str(v) or 'Symbol' in str(v) for v in row))
+            
+            df_closed = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY', skiprows=header_row_idx + 1)
+            df_closed.columns = df_closed.columns.str.strip()
+            df_closed = df_closed.dropna(subset=['Position', 'Gross P/L'])
+            df_closed['Gross P/L'] = pd.to_numeric(df_closed['Gross P/L'], errors='coerce').fillna(0)
+            
+            # Kumulativní profit (Equity Křivka)
+            df_closed = df_closed.sort_values(by='Close time')
+            df_closed['Cumulative_Profit'] = df_closed['Gross P/L'].cumsum()
+            
+            ziskove = df_closed[df_closed['Gross P/L'] > 0]
+            ztratove = df_closed[df_closed['Gross P/L'] < 0]
+            win_rate = (len(ziskove) / len(df_closed)) * 100
+            profit_factor = ziskove['Gross P/L'].sum() / abs(ztratove['Gross P/L'].sum()) if len(ztratove) > 0 else 1.0
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Celkem obchodů", len(df_closed))
+            m2.metric("Win Rate", f"{win_rate:.1f} %")
+            m3.metric("Profit Factor", f"{profit_factor:.2f}")
+            m4.metric("Čistý Zisk", f"{df_closed['Gross P/L'].sum():.2f} CZK")
+            
+            # GRAFICKÝ DASHBOARD
+            g1, g2 = st.columns([2, 1])
+            with g1:
+                fig_eq = go.Figure()
+                fig_eq.add_trace(go.Scatter(x=df_closed['Close time'], y=df_closed['Cumulative_Profit'], fill='tozeroy', line=dict(color='#00cc96', width=3), name="Křivka účtu"))
+                fig_eq.update_layout(title="📈 Kumulativní křivka majetku (Reálná Equity Curve z XTB)", height=350, xaxis_title="Datum", yaxis_title="CZK")
+                st.plotly_chart(fig_eq, use_container_width=True)
+            with g2:
+                fig_pie = px.pie(names=['Ziskové', 'Ztrátové'], values=[len(ziskove), len(ztratove)], color_discrete_sequence=['#00cc96', '#ef553b'], hole=0.4)
+                fig_pie.update_layout(title="📊 Distribuce úspěšnosti", height=350)
+                st.plotly_chart(fig_pie, use_container_width=True)
                 
-                # Výpočty statistik
-                ziskove = df_closed[df_closed['Gross P/L'] > 0]
-                ztratove = df_closed[df_closed['Gross P/L'] < 0]
-                
-                win_rate = (len(ziskove) / len(df_closed)) * 100 if len(df_closed) > 0 else 0
-                avg_win = ziskove['Gross P/L'].mean() if len(ziskove) > 0 else 0
-                avg_loss = abs(ztratove['Gross P/L'].mean()) if len(ztratove) > 0 else 0
-                real_rrr = avg_win / avg_loss if avg_loss > 0 else 0
-                profit_factor = ziskove['Gross P/L'].sum() / abs(ztratove['Gross P/L'].sum()) if ztratove['Gross P/L'].sum() != 0 else 1.0
-                net_pl = df_closed['Gross P/L'].sum()
-                
-                # Karty s metrikami
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Uzavřené obchody", len(df_closed))
-                m2.metric("Win Rate", f"{win_rate:.1f} %")
-                m3.metric("Profit Factor", f"{profit_factor:.2f}")
-                m4.metric("Čistý výsledek", f"{net_pl:.2f} CZK")
-                
-                st.info(f"📊 **Průměrný ziskový obchod:** {avg_win:.2f} CZK | **Průměrný ztrátový obchod:** -{avg_loss:.2f} CZK | **Reálné RRR:** 1 : {real_rrr:.2f}")
-                
-                if profit_factor > 1.4:
-                    st.success("🎯 **Hedge Fund Zhodnocení:** Strategie vykazuje silnou ziskovost. Risk management funguje správně.")
-                elif profit_factor >= 1.0:
-                    st.warning("⚖️ **Hedge Fund Zhodnocení:** Účet je zhruba na svém (Break-Even). Doporučuje se zvýšit cílové RRR v kalkulačce.")
-                else:
-                    st.error("📉 **Hedge Fund Zhodnocení:** Systém pálí kapitál. Okamžitě začni dodržovat pevné Stop Lossy podle doporučení bota.")
-                
-                # Chronologický graf
-                fig_xtb = go.Figure()
-                fig_xtb.add_trace(go.Bar(
-                    x=df_closed['Close time'],
-                    y=df_closed['Gross P/L'],
-                    marker_color=np.where(df_closed['Gross P/L'] >= 0, '#00cc96', '#ef553b'),
-                    name="P/L"
-                ))
-                fig_xtb.update_layout(title="Chronologický vývoj uzavřených výsledků", height=380, xaxis_title="Čas uzavření", yaxis_title="CZK")
-                st.plotly_chart(fig_xtb, use_container_width=True)
-                
-                st.dataframe(df_closed[['Position', 'Symbol', 'Type', 'Volume', 'Open price', 'Close price', 'Gross P/L', 'Comment']], use_container_width=True)
-            else:
-                st.error("V souboru nebyla nalezena tabulka s historií pozic. Ujisti se, že nahráváš správný list.")
+            st.dataframe(df_closed[['Position', 'Symbol', 'Type', 'Volume', 'Open price', 'Close price', 'Gross P/L', 'Comment']], use_container_width=True)
         except Exception as e:
-            st.error(f"Chyba při zpracování souboru: {e}")
+            st.error(f"Chyba parsování XTB souboru: {e}")
 
 # ==========================================
 # ZÁLOŽKA 4: BACKTEST STROJ ČASU
 # ==========================================
 with tab_backtest:
     st.header("⏪ Otestuj strategii na historii trhu")
-    bt_ticker = st.text_input("Zadej libovolný ticker pro backtest (např. USDJPY=X, EURUSD=X, GOLD):", value="USDJPY=X")
-    
+    bt_ticker = st.text_input("Zadej libovolný ticker pro backtest:", value="USDJPY=X")
     if st.button("🚀 Spustit historickou simulaci"):
         df_bt = get_market_data(bt_ticker)
         if df_bt is not None and not df_bt.empty:
-            with st.spinner("Počítám historii obchodů..."):
-                capital = 10000.0
-                trades = []
-                in_trade = False
-                
-                df_bt = df_bt.dropna(subset=['ATR', 'RSI', 'BB_Low', 'ADX'])
-                
-                for date, row in df_bt.iterrows():
-                    if not in_trade:
-                        # Simulace naší adaptivní strategie (Nákup v pásmu při ADX < 25)
-                        if row['RSI'] < 30 and row['Close'] < row['BB_Low'] and row['ADX'] < 25:
-                            entry_p = row['Close']
-                            sl_p = entry_p - (2 * row['ATR'])
-                            tp_p = entry_p + (2 * row['ATR'])  # Poměr 1:1 pro bleskový odraz z pásma
-                            in_trade = True
-                    else:
-                        if row['Low'] <= sl_p:
-                            capital -= 150  # Risk 1.5 % z fixního kapitálu
-                            trades.append(-150)
-                            in_trade = False
-                        elif row['High'] >= tp_p:
-                            capital += 150
-                            trades.append(150)
-                            in_trade = False
-                            
-                st.success(f"Simulace dokončena. Konečný virtuální kapitál: {capital:.2f} USD (Počet vygenerovaných obchodů: {len(trades)})")
+            capital, trades, in_trade = 10000.0, [], False
+            df_bt = df_bt.dropna(subset=['ATR', 'RSI', 'BB_Low', 'ADX'])
+            for date, row in df_bt.iterrows():
+                if not in_trade:
+                    if row['RSI'] < 30 and row['Close'] < row['BB_Low'] and row['ADX'] < 25:
+                        entry_p, sl_p, tp_p, in_trade = row['Close'], row['Close'] - (2 * row['ATR']), row['Close'] + (2 * row['ATR']), True
+                else:
+                    if row['Low'] <= sl_p: capital, in_trade = capital - 150, False
+                    elif row['High'] >= tp_p: capital, in_trade = capital + 150, False
+            st.success(f"Simulace hotova. Konečný kapitál: {capital:.2f} USD (Obchodů: {len(trades)})")
