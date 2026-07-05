@@ -37,7 +37,7 @@ if st.session_state.db_connected and len(st.session_state.journal) == 0:
         if res.data:
             st.session_state.journal = res.data
     except Exception:
-        pass  # Tiché přeskočení pouze při úvodním autoloadu, aby nerušilo uživatele
+        pass  
 
 # --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---
 @st.cache_data(ttl=300)
@@ -94,7 +94,6 @@ def get_market_data(ticker_symbol):
         gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
         
-        # Ochrana před dělením nulou v RSI
         rs = np.where(loss == 0, np.nan, gain / loss)
         df['RSI'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
         
@@ -115,7 +114,6 @@ def get_market_data(ticker_symbol):
 
 @st.cache_data(ttl=3600)
 def check_earnings(ticker_symbol):
-    # Pro earnings ponecháváme Finnhub, pokud je klíč dostupný a jedná se o US akcie
     api_key = st.secrets.get("FINNHUB_API_KEY", None)
     if not api_key or "=" in ticker_symbol or "^" in ticker_symbol or "/" in ticker_symbol:
         return False
@@ -136,7 +134,6 @@ col_search, _ = st.columns([1, 2])
 with col_search:
     raw_input = st.text_input("🔍 Hledaný instrument:", value="AAPL").upper().strip()
     
-    # AUTOMATICKÁ OPRAVA PRO FOREX (např. USDJPY -> USD/JPY)
     if len(raw_input) == 6 and "/" not in raw_input:
         forex_currencies = ["USD", "JPY", "EUR", "GBP", "CHF", "AUD", "CAD", "NZD"]
         if raw_input[:3] in forex_currencies or raw_input[3:] in forex_currencies:
@@ -298,7 +295,6 @@ with tab_backtest:
                     in_trade = False
                     entry_price = 0; sl = 0; tp = 0; volume = 0
                     
-                    # Odstraníme chybějící data pro backtest, aby neodpovídala hodnotám NaN
                     required_cols = ['ATR', 'RSI', 'BB_Low']
                     if bt_mtf:
                         required_cols.append('Weekly_SMA_50')
@@ -308,10 +304,9 @@ with tab_backtest:
                         if not in_trade:
                             trend_ok = (row['Close'] > row['Weekly_SMA_50']) if bt_mtf else True
                             
-                            # Logika vstupu do pozice
                             if row['RSI'] < bt_rsi and row['Close'] < row['BB_Low'] and trend_ok:
                                 entry_price = row['Close']
-                                atr_current = row['ATR'] if row['ATR'] > 0 else 0.01 # Ochrana před nulou
+                                atr_current = row['ATR'] if row['ATR'] > 0 else 0.01
                                 
                                 sl = entry_price - (bt_sl_atr * atr_current)
                                 tp = entry_price + (bt_tp_atr * atr_current)
@@ -322,7 +317,6 @@ with tab_backtest:
                                 if volume > 0:
                                     in_trade = True
                         else:
-                            # Logika výstupu z pozice
                             if row['Low'] <= sl:
                                 capital -= risk_amount
                                 trades.append({'Výsledek': 'Ztráta', 'Zisk/Ztráta': -risk_amount})
@@ -330,7 +324,7 @@ with tab_backtest:
                             elif row['High'] >= tp:
                                 profit = volume * (tp - entry_price)
                                 capital += profit
-                                trades.append({'Výsledek': 'Zsk', 'Zisk/Ztráta': profit})
+                                trades.append({'Výsledek': 'Zisk', 'Zisk/Ztráta': profit})
                                 in_trade = False
                                 
                         equity_curve.append({'Datum': date, 'Kapitál': capital})
@@ -377,58 +371,119 @@ with tab_forward:
         st.warning("Databáze není připojena.")
 
 # ==========================================
-# ZÁLOŽKA 4: CLOUDOVÝ DENÍK A DASHBOARD
+# ZÁLOŽKA 4: AUDIT OBCHODŮ (REÁLNÝ XTB IMPORT)
 # ==========================================
 with tab_journal:
-    st.header("📓 Můj obchodní deník a Statistiky")
+    st.header("📓 Můj obchodní deník a Audit Úspěšnosti")
+    st.markdown("Nahraj svůj kompletní `.xlsx` report stažený z XTB profilu (Investor Office).")
     
+    uploaded_file = st.file_uploader("Vyber XTB XLSX report účtu", type=["xlsx"])
+    
+    if uploaded_file is not None:
+        try:
+            # 1. Čtení uzavřených pozic (List 'CLOSED POSITION HISTORY')
+            # XTB exporty mají hlavičku na cca 11. řádku, musíme ji dynamicky najít
+            df_raw = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY')
+            
+            header_row_idx = None
+            for idx in range(len(df_raw)):
+                row_vals = df_raw.iloc[idx].astype(str).tolist()
+                if any('Position' in val or 'Symbol' in val for val in row_vals):
+                    header_row_idx = idx
+                    break
+                    
+            if header_row_idx is not None:
+                # Načteme list znovu od správného řádku
+                uploaded_file.seek(0)
+                df_closed = pd.read_excel(uploaded_file, sheet_name='CLOSED POSITION HISTORY', skiprows=header_row_idx + 1)
+                df_closed.columns = df_closed.columns.str.strip()
+                df_closed = df_closed.dropna(subset=['Position', 'Gross P/L'])
+                
+                # Vyčištění číselných hodnot
+                df_closed['Gross P/L'] = pd.to_numeric(df_closed['Gross P/L'], errors='coerce').fillna(0)
+                
+                st.success(f"✅ Úspěšně zpracováno {len(df_closed)} uzavřených tradingových operací.")
+                
+                # --- STATISTICKÉ METRIKY AUDITU ---
+                ziskove = df_closed[df_closed['Gross P/L'] > 0]
+                ztratove = df_closed[df_closed['Gross P/L'] < 0]
+                
+                total_trades = len(df_closed)
+                win_count = len(ziskove)
+                loss_count = len(ztratove)
+                
+                win_rate = (win_count / total_trades) * 100 if total_trades > 0 else 0
+                avg_win = ziskove['Gross P/L'].mean() if win_count > 0 else 0
+                avg_loss = abs(ztratove['Gross P/L'].mean()) if loss_count > 0 else 0
+                real_rrr = avg_win / avg_loss if avg_loss > 0 else 0
+                
+                total_win_sum = ziskove['Gross P/L'].sum()
+                total_loss_sum = abs(ztratove['Gross P/L'].sum())
+                profit_factor = total_win_sum / total_loss_sum if total_loss_sum > 0 else (total_win_sum if total_win_sum > 0 else 1.0)
+                net_pl = df_closed['Gross P/L'].sum()
+                
+                # Zobrazení karet s výsledky
+                aud1, aud2, aud3, aud4 = st.columns(4)
+                aud1.metric("Počet obchodů", total_trades)
+                aud2.metric("Win Rate", f"{win_rate:.1f} %")
+                aud3.metric("Profit Factor", f"{profit_factor:.2f}")
+                aud4.metric("Čistý P/L (Zisk)", f"{net_pl:.2f} CZK")
+                
+                st.info(f"📊 **Průměrný zisk:** {avg_win:.2f} CZK | **Průměrná ztráta:** -{avg_loss:.2f} CZK | **Výsledný poměr rizik (Reálné RRR):** 1 : {real_rrr:.2f}")
+                
+                # Rychlé slovní vyhodnocení
+                if profit_factor > 1.4:
+                    st.success("🎯 **Hedge Fund Zhodnocení:** Strategie vykazuje silnou ziskovost. Risk management funguje správně.")
+                elif profit_factor >= 1.0:
+                    st.warning("⚖️ **Hedge Fund Zhodnocení:** Účet je zhruba na svém (BE). Doporučuje se zvýšit RRR cíl z kalkulačky.")
+                else:
+                    st.error("📉 **Hedge Fund Zhodnocení:** Systém pálí kapitál. Zkontroluj pevné Stop Lossy v kalkulačce.")
+                
+                # Graf zisků a ztrát
+                fig_xtb = go.Figure()
+                fig_xtb.add_trace(go.Bar(
+                    x=df_closed['Close time'],
+                    y=df_closed['Gross P/L'],
+                    marker_color=np.where(df_closed['Gross P/L'] >= 0, '#00cc96', '#ef553b'),
+                    name="P/L"
+                ))
+                fig_xtb.update_layout(title="Chronologický vývoj uzavřených výsledků", height=380, xaxis_title="Čas uzavření", yaxis_title="CZK")
+                st.plotly_chart(fig_xtb, use_container_width=True)
+                
+                # Detailní tabulka
+                st.subheader("📋 Přehled uzavřených pozic")
+                st.dataframe(df_closed[['Position', 'Symbol', 'Type', 'Volume', 'Open price', 'Close price', 'Gross P/L', 'Comment']], use_container_width=True)
+                
+            else:
+                st.error("V souboru nebyla nalezena tabulka s historií pozic.")
+        except Exception as e:
+            st.error(f"Nepodařilo se načíst XLSX data. Zkontroluj formát reportu. Chyba: {e}")
+            
+    st.divider()
+    st.subheader("☁️ Manuální / Cloudový Deník (Supabase)")
     if st.session_state.db_connected:
         col_db1, col_db2 = st.columns(2)
         with col_db1:
             if st.button("☁️ Odeslat nové obchody do cloudu", type="primary"):
                 try:
-                    # Filtrujeme pouze lokální záznamy (ty, které nemají 'id' klíč z Supabase)
                     local_trades = [t for t in st.session_state.journal if 'id' not in t]
-                    
                     if local_trades:
                         for record in local_trades:
                             db_client.table("xtb_trades").insert(record).execute()
-                        st.success("Nové obchody úspěšně odeslány do databáze!")
-                        
-                        # Refresh stavu přímo z cloudu
+                        st.success("Uloženo do cloudu!")
                         res = db_client.table("xtb_trades").select("*").execute()
                         st.session_state.journal = res.data if res.data else []
-                    else:
-                        st.info("Žádné nové lokální obchody k odeslání.")
                 except Exception as e:
-                    st.error(f"Chyba při odesílání do DB: {e}")
-                    
+                    st.error(f"Chyba DB: {e}")
         with col_db2:
             if st.button("📥 Vynutit načtení z cloudu"):
                 try:
                     res = db_client.table("xtb_trades").select("*").execute()
                     if res.data:
                         st.session_state.journal = res.data
-                        st.success(f"Úspěšně synchronizováno {len(res.data)} obchodů z cloudu!")
-                    else:
-                        st.info("V databázi nejsou žádné obchody.")
+                        st.success("Načteno.")
                 except Exception as e:
-                    st.error(f"Chyba při synchronizaci: {e}")
-                    
-    if len(st.session_state.journal) > 0:
-        df_journal = pd.DataFrame(st.session_state.journal)
-        df_journal['Risk'] = pd.to_numeric(df_journal['Risk'], errors='coerce').fillna(0)
-        df_journal['Zisk'] = pd.to_numeric(df_journal['Zisk'], errors='coerce').fillna(0)
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Celkem obchodů", len(df_journal))
-        m2.metric("Celkový Risk", f"{df_journal['Risk'].sum():.2f}")
-        m3.metric("Potenciální Zisk", f"{df_journal['Zisk'].sum():.2f}")
-        
-        cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at', 'RRR_num']]
-        st.dataframe(df_journal[cols_to_show], use_container_width=True)
-    else:
-        st.info("Deník je prázdný. Přidej obchod pomocí Kalkulačky nebo jej stáhni z cloudu.")
+                    st.error(f"Chyba DB: {e}")
 
 with tab_scanner:
     st.info("Skener je nyní plně automatizován přes tvého GitHub Bota.")
