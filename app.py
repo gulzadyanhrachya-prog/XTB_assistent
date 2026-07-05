@@ -21,7 +21,7 @@ TICKER_DATABASE = {
     "🇵🇱 Polsko (GPW)": ["PKO.WA", "PKN.WA", "ALE.WA", "KGH.WA", "PZU.WA", "CDR.WA", "DNP.WA"],
     "🇪🇺 Evropa Mainstream": ["BMW.DE", "SAP.DE", "SIE.DE", "AIR.PA", "MC.PA", "ASML.AS", "VOW3.DE"],
     "🇺🇸 US Akcie (Výběr)": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "WMT", "DIS", "XOM", "KO"],
-    "🌍 Globální ETF": ["SPY", QQQ, "IWM", "EEM", "VGK", "IAU", "VNQ"],
+    "🌍 Globální ETF": ["SPY", "QQQ", "IWM", "EEM", "VGK", "IAU", "VNQ"],
     "💱 Forex (Měny)": ["EURUSD=X", "USDJPY=X", "GBPUSD=X", "AUDUSD=X", "USDCAD=X", "EURGBP=X"],
     "🔥 Komodity & Indexy (CFD)": ["GC=F", "SI=F", "CL=F", "NG=F", "^GSPC", "^IXIC", "^GDAXI"],
     "₿ Kryptoměny (CFD)": ["BTC-USD", "ETH-USD", "SOL-USD"]
@@ -110,7 +110,7 @@ tab_calc, tab_scanner, tab_journal, tab_backtest = st.tabs([
 # ZÁLOŽKA 1: KALKULAČKA A GRAFICKÝ BE
 # ==========================================
 with tab_calc:
-    current_price, atr = 0.0, 1.0
+    current_price, atr, df = 0.0, 1.0, None
     if ticker_input:
         df = get_market_data(ticker_input)
         if df is not None and not df.empty:
@@ -118,7 +118,7 @@ with tab_calc:
             atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 1.0
             st.success(f"✅ Aktuální tržní cena **{ticker_input}**: {current_price:.4f}")
 
-    st.subheader("🛡️ Pokročilý výpočet pozice s ochranou před swapy a Break-Even triggerem")
+    st.subheader("🛡️ Pokročilý výpočet pozice s ochranou před swapy s Break-Even triggerem")
     calc_type = st.radio("Typ instrumentu:", ["📈 Akcie a ETF", "💱 CFD / Forex / Komodity"], horizontal=True)
 
     if ticker_input in SWAP_WARNINGS or (ticker_input.replace("/", "") + "=X") in SWAP_WARNINGS:
@@ -192,7 +192,6 @@ with tab_scanner:
             
         df_res = pd.DataFrame(scan_results)
         
-        # Vizuální heatmapové podbarvení tabulky
         def style_results(val):
             if val == "🟢 ADAPTIVNÍ NÁKUP": return 'background-color: #d4edda; color: #155724; font-weight: bold;'
             if val == "🔴 Překoupeno": return 'background-color: #f8d7da; color: #721c24;'
@@ -217,13 +216,12 @@ with tab_journal:
             df_closed = df_closed.dropna(subset=['Position', 'Gross P/L'])
             df_closed['Gross P/L'] = pd.to_numeric(df_closed['Gross P/L'], errors='coerce').fillna(0)
             
-            # Kumulativní profit (Equity Křivka)
             df_closed = df_closed.sort_values(by='Close time')
             df_closed['Cumulative_Profit'] = df_closed['Gross P/L'].cumsum()
             
             ziskove = df_closed[df_closed['Gross P/L'] > 0]
             ztratove = df_closed[df_closed['Gross P/L'] < 0]
-            win_rate = (len(ziskove) / len(df_closed)) * 100
+            win_rate = (len(ziskove) / len(df_closed)) * 100 if len(df_closed) > 0 else 0
             profit_factor = ziskove['Gross P/L'].sum() / abs(ztratove['Gross P/L'].sum()) if len(ztratove) > 0 else 1.0
             
             m1, m2, m3, m4 = st.columns(4)
@@ -232,7 +230,6 @@ with tab_journal:
             m3.metric("Profit Factor", f"{profit_factor:.2f}")
             m4.metric("Čistý Zisk", f"{df_closed['Gross P/L'].sum():.2f} CZK")
             
-            # GRAFICKÝ DASHBOARD
             g1, g2 = st.columns([2, 1])
             with g1:
                 fig_eq = go.Figure()
