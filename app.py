@@ -7,7 +7,6 @@ import requests
 import time
 from datetime import datetime, timedelta
 from supabase import create_client, Client
-import google.generativeai as genai
 
 # --- ZÁKLADNÍ NASTAVENÍ STRÁNKY ---
 st.set_page_config(page_title="XTB Terminál Pro", page_icon="📈", layout="wide")
@@ -17,15 +16,28 @@ st.markdown("Kalkulačka, Skener, AI Zprávy, Deník, Backtest a **Forward-Testi
 # --- INICIALIZACE PAMĚTI A DATABÁZE ---
 if 'journal' not in st.session_state:
     st.session_state.journal = []
+if 'db_connected' not in st.session_state:
+    st.session_state.db_connected = False
 
 supabase_url = st.secrets.get("SUPABASE_URL", None)
 supabase_key = st.secrets.get("SUPABASE_KEY", None)
 db_client = None
+
 if supabase_url and supabase_key:
     try:
         db_client = create_client(supabase_url, supabase_key)
+        st.session_state.db_connected = True
+    except Exception as db_err:
+        st.sidebar.error(f"⚠️ Nepodařilo se připojit k Supabase: {db_err}")
+
+# Automatické načtení z cloudu při startu (pokud je DB připojená a deník je prázdný)
+if st.session_state.db_connected and len(st.session_state.journal) == 0:
+    try:
+        res = db_client.table("xtb_trades").select("*").execute()
+        if res.data:
+            st.session_state.journal = res.data
     except Exception:
-        pass
+        pass  # Tiché přeskočení pouze při úvodním autoloadu
 
 # --- FUNKCE PRO STAŽENÍ DAT A INDIKÁTORY ---
 @st.cache_data(ttl=300)
@@ -39,56 +51,68 @@ def get_market_data(ticker_symbol):
             end = int(time.time())
             start = end - (2 * 365 * 24 * 60 * 60)
             url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker_symbol}&resolution=D&from={start}&to={end}&token={finnhub_key}"
-            res = requests.get(url).json()
+            response = requests.get(url)
+            response.raise_for_status()
+            res = response.json()
             if res.get("s") == "ok":
                 df = pd.DataFrame({"Open": res["o"], "High": res["h"], "Low": res["l"], "Close": res["c"]}, index=pd.to_datetime(res["t"], unit="s"))
                 df = df.sort_index()
-        except Exception: pass
+        except Exception as e:
+            st.sidebar.warning(f"Finnhub API chyba pro {ticker_symbol}: {e}")
 
     # 2. Twelve Data (Forex / Indexy)
     twelve_key = st.secrets.get("TWELVEDATA_API_KEY", None)
     if df.empty and twelve_key and "/" in ticker_symbol:
         try:
             url = f"https://api.twelvedata.com/time_series?symbol={ticker_symbol}&interval=1day&outputsize=500&apikey={twelve_key}"
-            res = requests.get(url).json()
+            response = requests.get(url)
+            response.raise_for_status()
+            res = response.json()
             if "values" in res:
                 df_td = pd.DataFrame(res["values"])
                 df_td['datetime'] = pd.to_datetime(df_td['datetime'])
                 df_td = df_td.set_index('datetime').astype(float)
                 df_td = df_td.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
                 df = df_td.sort_index()
-        except Exception: pass
+        except Exception as e:
+            st.sidebar.warning(f"Twelve Data API chyba pro {ticker_symbol}: {e}")
             
     # 3. Yahoo Finance (Záloha)
     if df.empty:
         try:
             yf_ticker = ticker_symbol
-            # Yahoo Finance potřebuje pro Forex formát EURUSD=X místo EUR/USD
             if "/" in ticker_symbol:
                 yf_ticker = ticker_symbol.replace("/", "") + "=X"
             df = yf.Ticker(yf_ticker).history(period="2y")
-        except Exception: return None
+        except Exception as e:
+            st.sidebar.error(f"Yahoo Finance záloha selhala: {e}")
+            return None
         
     if df is None or df.empty:
         return None
         
     # --- VÝPOČET POKROČILÝCH INDIKÁTORŮ ---
     try:
-        # Odstranění časové zóny (Yahoo Finance ji někdy přidává a rozbíjí to výpočty)
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
             
+        # Kontrola dostatečného množství dat pro 200 SMA
+        if len(df) < 200:
+            st.sidebar.warning(f"Nedostatek dat ({len(df)} dní) pro výpočet SMA_200 u {ticker_symbol}.")
+
         df_weekly = df.resample('W').agg({'Close': 'last'})
-        df_weekly['SMA_50_W'] = df_weekly['Close'].rolling(50).mean()
+        df_weekly['SMA_50_W'] = df_weekly['Close'].rolling(window=min(50, len(df_weekly))).mean()
         df['Weekly_SMA_50'] = df_weekly['SMA_50_W'].reindex(df.index, method='ffill')
 
-        df['SMA_50'] = df['Close'].rolling(window=50).mean()
-        df['SMA_200'] = df['Close'].rolling(window=200).mean()
+        df['SMA_50'] = df['Close'].rolling(window=min(50, len(df))).mean()
+        df['SMA_200'] = df['Close'].rolling(window=min(200, len(df))).mean()
         
         delta = df['Close'].diff()
         gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
         loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+        # Ochrana před dělením nulou v RSI
+        rs = np.where(loss == 0, np.nan, gain / loss)
+        df['RSI'] = np.where(loss == 0, 100, 100 - (100 / (1 + rs)))
         
         df['BB_Mid'] = df['Close'].rolling(window=20).mean()
         df['BB_Std'] = df['Close'].rolling(window=20).std()
@@ -100,8 +124,9 @@ def get_market_data(ticker_symbol):
         low_close = np.abs(df['Low'] - df['Close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         df['ATR'] = np.max(ranges, axis=1).rolling(14).mean()
-    except Exception:
-        pass
+    except Exception as calc_err:
+        st.sidebar.error(f"Chyba při výpočtu indikátorů: {calc_err}")
+        
     return df
 
 @st.cache_data(ttl=3600)
@@ -116,7 +141,8 @@ def check_earnings(ticker_symbol):
         res = requests.get(url).json()
         if "earningsCalendar" in res and len(res["earningsCalendar"]) > 0:
             return True
-    except Exception: pass
+    except Exception as e:
+        st.sidebar.warning(f"Nelze ověřit Earnings: {e}")
     return False
 
 # --- GLOBÁLNÍ VYHLEDÁVÁNÍ ---
@@ -125,7 +151,6 @@ col_search, _ = st.columns([1, 2])
 with col_search:
     raw_input = st.text_input("🔍 Hledaný instrument:", value="AAPL").upper().strip()
     
-    # AUTOMATICKÁ OPRAVA PRO FOREX (např. USDJPY -> USD/JPY)
     if len(raw_input) == 6 and "/" not in raw_input:
         forex_currencies = ["USD", "JPY", "EUR", "GBP", "CHF", "AUD", "CAD", "NZD"]
         if raw_input[:3] in forex_currencies or raw_input[3:] in forex_currencies:
@@ -219,11 +244,9 @@ with tab_calc:
                 st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
     else:
-        st.info("Pro CFD zadej hodnotu 1 bodu. Logika výpočtu je stejná.")
         c3, c4 = st.columns(2)
         with c3:
-            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=
-100.0, value=2071.0, step=100.0, key="bal_cfd")
+            acc_bal_cfd = st.number_input("Zůstatek na účtu:", min_value=100.0, value=2071.0, step=100.0, key="bal_cfd")
             risk_pct_cfd = st.number_input("Maximální risk (%):", min_value=0.1, max_value=10.0, value=1.5, step=0.1, key="risk_cfd")
         with c4:
             entry_cfd = st.number_input("Vstupní cena (Entry):", min_value=0.00001, value=current_price if current_price > 0 else 1.1000, format="%.5f", key="entry_cfd")
@@ -265,7 +288,7 @@ with tab_calc:
                 st.toast('Obchod uložen do lokálního deníku!', icon='📓')
 
 # ==========================================
-# ZÁLOŽKA 5: BACKTESTING (Stroj času)
+# ZÁLOŽKA 5: BACKTESTING
 # ==========================================
 with tab_backtest:
     st.header("⏪ Stroj času: Otestuj svou strategii na historii")
@@ -289,19 +312,28 @@ with tab_backtest:
                     in_trade = False
                     entry_price = 0; sl = 0; tp = 0; volume = 0
                     
-                    for date, row in df_bt.iterrows():
-                        if pd.isna(row['ATR']) or pd.isna(row['RSI']): continue
-                        
+                    # Odstraníme chybějící data, abychom neiterovali přes NaN indikátory
+                    df_bt_clean = df_bt.dropna(subset=['ATR', 'RSI', 'BB_Low', 'Weekly_SMA_50'] if bt_mtf else ['ATR', 'RSI', 'BB_Low'])
+                    
+                    for date, row in df_bt_clean.iterrows():
                         if not in_trade:
                             trend_ok = (row['Close'] > row['Weekly_SMA_50']) if bt_mtf else True
+                            
+                            # Používáme nákupní signál
                             if row['RSI'] < bt_rsi and row['Close'] < row['BB_Low'] and trend_ok:
                                 entry_price = row['Close']
-                                sl = entry_price - (bt_sl_atr * row['ATR'])
-                                tp = entry_price + (bt_tp_atr * row['ATR'])
+                                atr_current = row['ATR'] if row['ATR'] > 0 else 0.01 # Ochrana před nulovým ATR
+                                
+                                sl = entry_price - (bt_sl_atr * atr_current)
+                                tp = entry_price + (bt_tp_atr * atr_current)
                                 risk_amount = capital * risk_pct
-                                volume = risk_amount / (entry_price - sl) if entry_price > sl else 0
-                                in_trade = True
+                                
+                                risk_per_unit = (entry_price - sl)
+                                volume = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
+                                if volume > 0:
+                                    in_trade = True
                         else:
+                            # Kontrola výstupu z pozice
                             if row['Low'] <= sl:
                                 capital -= risk_amount
                                 trades.append({'Výsledek': 'Ztráta', 'Zisk/Ztráta': -risk_amount})
@@ -334,13 +366,13 @@ with tab_backtest:
                         st.warning("Strategie nevygenerovala za poslední 2 roky žádný obchod.")
 
 # ==========================================
-# ZÁLOŽKA 6: FORWARD-TESTING (Signály Bota)
+# ZÁLOŽKA 6: FORWARD-TESTING
 # ==========================================
 with tab_forward:
     st.header("🚀 Papírové portfolio Bota (Forward-Testing)")
     st.markdown("Zde vidíš všechny signály, které tvůj bot na GitHubu vygeneroval a uložil do databáze.")
     
-    if db_client:
+    if st.session_state.db_connected:
         if st.button("🔄 Načíst signály od Bota"):
             try:
                 res = db_client.table("bot_signals").select("*").order("Datum", desc=True).execute()
@@ -360,26 +392,39 @@ with tab_forward:
 # ==========================================
 with tab_journal:
     st.header("📓 Můj obchodní deník a Statistiky")
-    if db_client:
+    
+    if st.session_state.db_connected:
         col_db1, col_db2 = st.columns(2)
         with col_db1:
             if st.button("☁️ Odeslat nové obchody do cloudu", type="primary"):
                 try:
-                    for record in st.session_state.journal:
-                        db_client.table("xtb_trades").insert(record).execute()
-                    st.success("Data byla úspěšně odeslána do databáze!")
-                    st.session_state.journal = [] 
+                    # Odesíláme pouze lokálně přidané obchody (které nemají 'id' z databáze)
+                    local_trades = [t for t in st.session_state.journal if 'id' not in t]
+                    
+                    if local_trades:
+                        for record in local_trades:
+                            db_client.table("xtb_trades").insert(record).execute()
+                        st.success("Nové obchody úspěšně odeslány do databáze!")
+                        
+                        # Znovu načteme čistý stav z databáze
+                        res = db_client.table("xtb_trades").select("*").execute()
+                        st.session_state.journal = res.data if res.data else []
+                    else:
+                        st.info("Žádné nové lokální obchody k odeslání.")
                 except Exception as e:
-                    st.error(f"Chyba při odesílání: {e}")
+                    st.error(f"Chyba při odesílání do DB: {e}")
+                    
         with col_db2:
-            if st.button("📥 Načíst historii z cloudu"):
+            if st.button("📥 Vynutit načtení z cloudu"):
                 try:
                     res = db_client.table("xtb_trades").select("*").execute()
                     if res.data:
                         st.session_state.journal = res.data
-                        st.success(f"Úspěšně načteno {len(res.data)} obchodů z cloudu!")
+                        st.success(f"Úspěšně synchronizováno {len(res.data)} obchodů z cloudu!")
+                    else:
+                        st.info("V databázi nejsou žádné obchody.")
                 except Exception as e:
-                    st.error(f"Chyba při načítání: {e}")
+                    st.error(f"Chyba při synchronizaci: {e}")
                     
     if len(st.session_state.journal) > 0:
         df_journal = pd.DataFrame(st.session_state.journal)
@@ -393,6 +438,8 @@ with tab_journal:
         
         cols_to_show = [c for c in df_journal.columns if c not in ['id', 'created_at', 'RRR_num']]
         st.dataframe(df_journal[cols_to_show], use_container_width=True)
+    else:
+        st.info("Deník je prázdný. Přidej obchod pomocí Kalkulačky nebo jej stáhni z cloudu.")
 
 with tab_scanner:
     st.info("Skener je nyní plně automatizován přes tvého GitHub Bota.")
